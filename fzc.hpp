@@ -13,18 +13,20 @@
 #include <filesystem>
 #include <locale>
 #include <codecvt>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
 // Node structure to represent files and directories in the tree
 struct FileNode {
-    std::string path;
+    std::string path;      // Display path (can be full length)
+    std::string workPath;  // Working path (shortened if needed)
     uint64_t size;
     bool isDirectory;
     std::vector<std::shared_ptr<FileNode>> children;
     
-    FileNode(const std::string& p, uint64_t s, bool isDir) 
-        : path(p), size(s), isDirectory(isDir) {}
+    FileNode(const std::string& p, const std::string& wp, uint64_t s, bool isDir) 
+        : path(p), workPath(wp), size(s), isDirectory(isDir) {}
 };
 
 // Result structure that includes timing information
@@ -43,11 +45,20 @@ public:
     FZC(bool useParallelProcessing = true, int maxThreads = 0);
     
     // Calculate sizes and return the root node with timing information
-    FolderSizeResult calculateFolderSizes(const std::string& rootPath);
+    FolderSizeResult calculateFolderSizes(const std::string& path);
     
 private:
-    // Convert path to UTF-8 string
-    static std::string toUTF8(const fs::path& path);
+    // Convert path to UTF-8 string and handle long paths
+    static std::pair<std::string, std::string> toUTF8AndWorkPath(const fs::path& path);
+    
+    // Get a shortened working path for long paths
+    static std::string getShortenedPath(const std::string& path);
+    
+    // Ensure temporary directory exists
+    static void ensureTempDirExists();
+    
+    // Process a single file
+    std::shared_ptr<FileNode> processFile(const std::string& path);
     
     // Recursive function to process directories
     std::shared_ptr<FileNode> processDirectory(const std::string& path, int depth = 0);
@@ -77,6 +88,10 @@ private:
     // Cache for processed paths to avoid cycles
     std::unordered_set<std::string> m_processedPaths;
     std::mutex m_cacheMutex;
+    
+    // Map to store working path to full path mapping
+    std::unordered_map<std::string, std::string> m_pathMap;
+    std::mutex m_pathMapMutex;
 };
 
 // C-style interface for Swift interoperability

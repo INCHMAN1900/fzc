@@ -43,12 +43,13 @@ void printTree(const std::shared_ptr<FileNode>& node, int level = 0) {
 
 // Print usage information
 void printUsage() {
-    std::cout << "Usage: udu [options] <directory_path>\n"
+    std::cout << "Usage: udu [options] <path>\n"
               << "Options:\n"
               << "  -t, --time-only    Display only the time taken for calculation\n"
               << "  -s, --sequential   Use sequential processing (disable parallel processing)\n"
               << "  -j, --threads N    Specify maximum number of threads to use (default: auto)\n"
-              << "  -h, --help         Display this help message\n";
+              << "  -h, --help         Display this help message\n\n"
+              << "The path can be either a directory or a single file.\n";
 }
 
 void printNode(const std::shared_ptr<FileNode>& node, int level = 0, bool timeOnly = false) {
@@ -65,9 +66,14 @@ void printNode(const std::shared_ptr<FileNode>& node, int level = 0, bool timeOn
 int main(int argc, char* argv[]) {
     // Set up locale for UTF-8 output
     std::ios_base::sync_with_stdio(false);
-    std::locale::global(std::locale("en_US.UTF-8"));
-    std::cout.imbue(std::locale());
-    std::cerr.imbue(std::locale());
+    try {
+        std::locale::global(std::locale("en_US.UTF-8"));
+        std::cout.imbue(std::locale());
+        std::cerr.imbue(std::locale());
+    } catch (const std::exception& e) {
+        // Continue even if locale setting fails
+        std::cerr << "Warning: Could not set locale: " << e.what() << std::endl;
+    }
     
     if (argc < 2) {
         printUsage();
@@ -117,7 +123,7 @@ int main(int argc, char* argv[]) {
         }
         else {
             if (!directoryPath.empty()) {
-                std::cerr << "Error: Multiple directory paths specified\n";
+                std::cerr << "Error: Multiple paths specified\n";
                 printUsage();
                 return 1;
             }
@@ -126,7 +132,7 @@ int main(int argc, char* argv[]) {
     }
     
     if (directoryPath.empty()) {
-        std::cerr << "Error: No directory path specified\n";
+        std::cerr << "Error: No path specified\n";
         printUsage();
         return 1;
     }
@@ -138,18 +144,36 @@ int main(int argc, char* argv[]) {
         // Calculate sizes
         auto result = calculator.calculateFolderSizes(directoryPath);
         
+        if (!result.rootNode) {
+            std::cerr << "Error: Failed to process path: " << directoryPath << "\n";
+            return 1;
+        }
+        
         // Print results
         if (!timeOnly) {
             std::cout << "\nResults for: " << directoryPath << "\n\n";
-            printNode(result.rootNode, 0, timeOnly);
+            if (result.rootNode->isDirectory) {
+                printNode(result.rootNode, 0, timeOnly);
+            } else {
+                std::cout << result.rootNode->path << " (" << formatSize(result.rootNode->size) << ")\n";
+            }
             std::cout << "\nTotal size: " << formatSize(result.rootNode->size) << "\n";
         }
         
         std::cout << "Time taken: " << result.elapsedTimeMs << " ms\n";
         
         return 0;
-    } catch (const std::exception& e) {
+    } catch (const std::runtime_error& e) {
+        // Handle specific runtime errors (like path too long)
         std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    } catch (const std::exception& e) {
+        // Handle other exceptions
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    } catch (...) {
+        // Handle unknown exceptions
+        std::cerr << "Error: An unknown error occurred\n";
         return 1;
     }
 } 
