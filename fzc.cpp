@@ -1,4 +1,4 @@
-#include "folder_size_calculator.hpp"
+#include "fzc.hpp"
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
@@ -7,7 +7,7 @@
 namespace fs = std::filesystem;
 
 // Constructor with parallelism configuration
-FolderSizeCalculator::FolderSizeCalculator(bool useParallelProcessing, int maxThreads)
+FZC::FZC(bool useParallelProcessing, int maxThreads)
     : m_useParallelProcessing(useParallelProcessing),
       m_maxThreads(maxThreads),
       m_maxDepthForParallelism(4) // Only use parallelism for top levels of directory tree
@@ -20,7 +20,7 @@ FolderSizeCalculator::FolderSizeCalculator(bool useParallelProcessing, int maxTh
     }
 }
 
-FolderSizeResult FolderSizeCalculator::calculateFolderSizes(const std::string& rootPath) {
+FolderSizeResult FZC::calculateFolderSizes(const std::string& rootPath) {
     // Start timing
     auto startTime = std::chrono::high_resolution_clock::now();
     
@@ -40,7 +40,7 @@ FolderSizeResult FolderSizeCalculator::calculateFolderSizes(const std::string& r
     return FolderSizeResult(rootNode, static_cast<double>(duration.count()));
 }
 
-std::shared_ptr<FileNode> FolderSizeCalculator::processDirectory(const std::string& path, int depth) {
+std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int depth) {
     try {
         fs::path dirPath(path);
         if (!fs::exists(dirPath)) {
@@ -110,101 +110,11 @@ std::shared_ptr<FileNode> FolderSizeCalculator::processDirectory(const std::stri
     }
 }
 
-std::shared_ptr<FileNode> FolderSizeCalculator::processDirectoryParallel(const std::string& path, int depth) {
-    try {
-        fs::path dirPath(path);
-        if (!fs::exists(dirPath)) {
-            return nullptr;
-        }
-        
-        auto node = std::make_shared<FileNode>(path, 0, true);
-        
-        // Collect all entries first to avoid iterator invalidation when spawning threads
-        std::vector<fs::directory_entry> entries;
-        try {
-            for (const auto& entry : fs::directory_iterator(dirPath)) {
-                entries.push_back(entry);
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "Error reading directory " << path 
-                      << ": " << e.what() << std::endl;
-        }
-        
-        // Process directories in parallel if we're at a shallow depth and have available threads
-        std::vector<std::future<std::shared_ptr<FileNode>>> futures;
-        
-        for (const auto& entry : entries) {
-            try {
-                if (entry.is_directory()) {
-                    // Check if we should process this directory in parallel
-                    bool useParallel = (depth < m_maxDepthForParallelism);
-                    
-                    if (useParallel) {
-                        // Check if we have available threads
-                        std::unique_lock<std::mutex> lock(m_threadMutex);
-                        if (m_activeThreads < m_maxThreads) {
-                            m_activeThreads++;
-                            lock.unlock();
-                            
-                            // Process in parallel
-                            auto future = std::async(std::launch::async, [this, entry, depth]() {
-                                auto result = processDirectoryParallel(entry.path().string(), depth + 1);
-                                m_activeThreads--;
-                                return result;
-                            });
-                            futures.push_back(std::move(future));
-                            continue;
-                        }
-                    }
-                    
-                    // Process sequentially if we can't use parallelism
-                    auto childNode = processDirectoryParallel(entry.path().string(), depth + 1);
-                    if (childNode) {
-                        node->size += childNode->size;
-                        node->children.push_back(childNode);
-                    }
-                } else if (entry.is_regular_file()) {
-                    // Process file (always sequential)
-                    uint64_t fileSize = getFileSize(entry.path().string());
-                    auto fileNode = std::make_shared<FileNode>(entry.path().string(), fileSize, false);
-                    node->size += fileSize;
-                    node->children.push_back(fileNode);
-                }
-            } catch (const std::exception& e) {
-                // Skip entries that can't be accessed
-                std::cerr << "Error processing entry " << entry.path().string() 
-                          << ": " << e.what() << std::endl;
-            }
-        }
-        
-        // Wait for all parallel tasks to complete and collect results
-        for (auto& future : futures) {
-            try {
-                auto childNode = future.get();
-                if (childNode) {
-                    node->size += childNode->size;
-                    node->children.push_back(childNode);
-                }
-            } catch (const std::exception& e) {
-                std::cerr << "Error in parallel directory processing: " << e.what() << std::endl;
-            }
-        }
-        
-        // Sort children by size (largest first) for better visualization
-        std::sort(node->children.begin(), node->children.end(), 
-                 [](const std::shared_ptr<FileNode>& a, const std::shared_ptr<FileNode>& b) {
-                     return a->size > b->size;
-                 });
-        
-        return node;
-    } catch (const std::exception& e) {
-        std::cerr << "Error processing directory " << path 
-                  << ": " << e.what() << std::endl;
-        return nullptr;
-    }
+std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth) {
+    return processDirectory(path, depth);  // Use the same optimized implementation
 }
 
-uint64_t FolderSizeCalculator::getFileSize(const std::string& path) {
+uint64_t FZC::getFileSize(const std::string& path) {
     try {
         return fs::file_size(fs::path(path));
     } catch (const std::exception& e) {
@@ -214,7 +124,7 @@ uint64_t FolderSizeCalculator::getFileSize(const std::string& path) {
     }
 }
 
-void FolderSizeCalculator::processBatch(
+void FZC::processBatch(
     std::vector<fs::directory_entry>& batch,
     std::shared_ptr<FileNode>& node,
     int depth,
@@ -267,14 +177,14 @@ void FolderSizeCalculator::processBatch(
 extern "C" {
     FolderSizeResultPtr calculateFolderSizes(const char* rootPath) {
         // Use default settings (parallel processing with auto thread count)
-        FolderSizeCalculator calculator(true, 0);
+        FZC calculator(true, 0);
         auto result = calculator.calculateFolderSizes(rootPath);
         // Transfer ownership to C interface
         return static_cast<void*>(new FolderSizeResult(std::move(result)));
     }
     
     FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads) {
-        FolderSizeCalculator calculator(useParallelProcessing, maxThreads);
+        FZC calculator(useParallelProcessing, maxThreads);
         auto result = calculator.calculateFolderSizes(rootPath);
         // Transfer ownership to C interface
         return static_cast<void*>(new FolderSizeResult(std::move(result)));

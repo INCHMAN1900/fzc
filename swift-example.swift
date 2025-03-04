@@ -1,7 +1,7 @@
 import Foundation
 
 // Define the C function interfaces
-private let libraryName = "folder_size_calculator"
+private let libraryName = "fzc"
 
 // Load the library dynamically
 private func loadLibrary() -> UnsafeMutableRawPointer? {

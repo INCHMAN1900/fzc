@@ -1,5 +1,5 @@
-#ifndef FOLDER_SIZE_CALCULATOR_HPP
-#define FOLDER_SIZE_CALCULATOR_HPP
+#ifndef FZC_HPP
+#define FZC_HPP
 
 #include <string>
 #include <vector>
@@ -35,10 +35,10 @@ struct FolderSizeResult {
 };
 
 // Main class for calculating folder sizes
-class FolderSizeCalculator {
+class FZC {
 public:
     // Constructor with configurable parallelism
-    FolderSizeCalculator(bool useParallelProcessing = true, int maxThreads = 0);
+    FZC(bool useParallelProcessing = true, int maxThreads = 0);
     
     // Calculate sizes and return the root node with timing information
     FolderSizeResult calculateFolderSizes(const std::string& rootPath);
@@ -104,4 +104,4 @@ extern "C" {
     void releaseResult(FolderSizeResultPtr result);
 }
 
-#endif // FOLDER_SIZE_CALCULATOR_HPP 
+#endif // FZC_HPP 
