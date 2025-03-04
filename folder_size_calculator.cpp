@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
+#include <sys/stat.h>
 
 namespace fs = std::filesystem;
 
@@ -46,36 +47,65 @@ std::shared_ptr<FileNode> FolderSizeCalculator::processDirectory(const std::stri
             return nullptr;
         }
         
-        auto node = std::make_shared<FileNode>(path, 0, true);
+        {
+            std::lock_guard<std::mutex> lock(m_cacheMutex);
+            if (m_processedPaths.find(path) != m_processedPaths.end()) {
+                return nullptr;
+            }
+            m_processedPaths.insert(path);
+        }
         
-        // Iterate through directory entries
-        for (const auto& entry : fs::directory_iterator(dirPath)) {
-            try {
-                if (entry.is_directory()) {
-                    // Process subdirectory recursively
-                    auto childNode = processDirectory(entry.path().string(), depth + 1);
-                    if (childNode) {
-                        node->size += childNode->size;
-                        node->children.push_back(childNode);
-                    }
-                } else if (entry.is_regular_file()) {
-                    // Process file
-                    uint64_t fileSize = getFileSize(entry.path().string());
-                    auto fileNode = std::make_shared<FileNode>(entry.path().string(), fileSize, false);
-                    node->size += fileSize;
-                    node->children.push_back(fileNode);
+        // Create node and get the directory entry size
+        auto node = std::make_shared<FileNode>(path, 0, true);
+        try {
+            // Get the directory entry size using stat to get accurate size
+            struct stat st;
+            if (stat(path.c_str(), &st) == 0) {
+                node->size = st.st_size;
+            }
+        } catch (const std::exception&) {
+            // If we can't get the directory size, just use 0
+            node->size = 0;
+        }
+        
+        std::vector<fs::directory_entry> batch;
+        batch.reserve(BATCH_SIZE);
+        std::vector<std::future<std::shared_ptr<FileNode>>> futures;
+        
+        try {
+            for (const auto& entry : fs::directory_iterator(dirPath)) {
+                batch.push_back(entry);
+                if (batch.size() >= BATCH_SIZE) {
+                    processBatch(batch, node, depth, futures);
                 }
-            } catch (const std::exception& e) {
-                // Skip entries that can't be accessed
-                std::cerr << "Error processing entry " << entry.path().string() 
-                          << ": " << e.what() << std::endl;
+            }
+            
+            if (!batch.empty()) {
+                processBatch(batch, node, depth, futures);
+            }
+        } catch (const std::exception&) {
+            // Skip inaccessible directories
+        }
+        
+        // Process futures if any
+        for (auto& future : futures) {
+            try {
+                if (auto childNode = future.get()) {
+                    node->size += childNode->size;
+                    node->children.push_back(childNode);
+                }
+            } catch (const std::exception&) {
+                // Skip failed futures
             }
         }
         
+        if (!node->children.empty()) {
+            std::sort(node->children.begin(), node->children.end(),
+                     [](const auto& a, const auto& b) { return a->size > b->size; });
+        }
+        
         return node;
-    } catch (const std::exception& e) {
-        std::cerr << "Error processing directory " << path 
-                  << ": " << e.what() << std::endl;
+    } catch (const std::exception&) {
         return nullptr;
     }
 }
@@ -182,6 +212,55 @@ uint64_t FolderSizeCalculator::getFileSize(const std::string& path) {
                   << ": " << e.what() << std::endl;
         return 0;
     }
+}
+
+void FolderSizeCalculator::processBatch(
+    std::vector<fs::directory_entry>& batch,
+    std::shared_ptr<FileNode>& node,
+    int depth,
+    std::vector<std::future<std::shared_ptr<FileNode>>>& futures)
+{
+    for (const auto& entry : batch) {
+        try {
+            if (entry.is_directory()) {
+                bool useParallel = (depth < m_maxDepthForParallelism && m_useParallelProcessing);
+                if (useParallel) {
+                    // Check if we have available threads
+                    std::unique_lock<std::mutex> lock(m_threadMutex);
+                    if (m_activeThreads < m_maxThreads) {
+                        m_activeThreads++;
+                        lock.unlock();
+                        
+                        // Process in parallel
+                        auto future = std::async(std::launch::async, [this, entry, depth]() {
+                            auto result = processDirectoryParallel(entry.path().string(), depth + 1);
+                            m_activeThreads--;
+                            return result;
+                        });
+                        futures.push_back(std::move(future));
+                        continue;
+                    }
+                }
+                
+                // Process sequentially if we can't use parallelism
+                auto childNode = processDirectory(entry.path().string(), depth + 1);
+                if (childNode) {
+                    node->size += childNode->size;
+                    node->children.push_back(childNode);
+                }
+            } else if (entry.is_regular_file()) {
+                uint64_t fileSize = getFileSize(entry.path().string());
+                if (fileSize > 0) {
+                    auto fileNode = std::make_shared<FileNode>(entry.path().string(), fileSize, false);
+                    node->size += fileSize;
+                    node->children.push_back(fileNode);
+                }
+            }
+        } catch (const std::exception&) {
+            // Skip problematic entries
+        }
+    }
+    batch.clear();
 }
 
 // C-style interface implementation

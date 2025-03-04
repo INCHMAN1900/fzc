@@ -9,6 +9,10 @@
 #include <mutex>
 #include <atomic>
 #include <thread>
+#include <unordered_set>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 // Node structure to represent files and directories in the tree
 struct FileNode {
@@ -49,14 +53,25 @@ private:
     // Helper function to get file size
     uint64_t getFileSize(const std::string& path);
     
+    // Helper function to process a batch of entries
+    void processBatch(std::vector<fs::directory_entry>& batch,
+                     std::shared_ptr<FileNode>& node,
+                     int depth,
+                     std::vector<std::future<std::shared_ptr<FileNode>>>& futures);
+    
     // Configuration
     bool m_useParallelProcessing;
     int m_maxThreads;
     int m_maxDepthForParallelism;
+    static constexpr size_t BATCH_SIZE = 100;  // Size of batches for processing
     
     // Thread management
     std::atomic<int> m_activeThreads{0};
     std::mutex m_threadMutex;
+    
+    // Cache for processed paths to avoid cycles
+    std::unordered_set<std::string> m_processedPaths;
+    std::mutex m_cacheMutex;
 };
 
 // C-style interface for Swift interoperability
