@@ -187,8 +187,14 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         }
         
         if (!node->children.empty()) {
+            // Sort by size in descending order, then by path for stable ordering
             std::sort(node->children.begin(), node->children.end(),
-                     [](const auto& a, const auto& b) { return a->size > b->size; });
+                     [](const auto& a, const auto& b) {
+                         if (a->size != b->size) {
+                             return a->size > b->size;  // Descending order by size
+                         }
+                         return a->path < b->path;      // Ascending order by path if sizes are equal
+                     });
         }
         
         return node;
