@@ -11,6 +11,8 @@
 #include <thread>
 #include <unordered_set>
 #include <filesystem>
+#include <locale>
+#include <codecvt>
 
 namespace fs = std::filesystem;
 
@@ -44,6 +46,9 @@ public:
     FolderSizeResult calculateFolderSizes(const std::string& rootPath);
     
 private:
+    // Convert path to UTF-8 string
+    static std::string toUTF8(const fs::path& path);
+    
     // Recursive function to process directories
     std::shared_ptr<FileNode> processDirectory(const std::string& path, int depth = 0);
     
@@ -76,10 +81,8 @@ private:
 
 // C-style interface for Swift interoperability
 extern "C" {
-    // Opaque pointer type for FileNode
+    // Opaque pointer types
     typedef void* FileNodePtr;
-    
-    // Opaque pointer type for FolderSizeResult
     typedef void* FolderSizeResultPtr;
     
     // Function to calculate folder sizes and return the result

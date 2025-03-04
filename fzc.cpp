@@ -6,6 +6,11 @@
 
 namespace fs = std::filesystem;
 
+// Helper function to convert path to UTF-8 string
+std::string FZC::toUTF8(const fs::path& path) {
+    return path.string();  // std::filesystem already handles UTF-8 on macOS
+}
+
 // Constructor with parallelism configuration
 FZC::FZC(bool useParallelProcessing, int maxThreads)
     : m_useParallelProcessing(useParallelProcessing),
@@ -47,20 +52,21 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             return nullptr;
         }
         
+        std::string utf8Path = toUTF8(dirPath);
         {
             std::lock_guard<std::mutex> lock(m_cacheMutex);
-            if (m_processedPaths.find(path) != m_processedPaths.end()) {
+            if (m_processedPaths.find(utf8Path) != m_processedPaths.end()) {
                 return nullptr;
             }
-            m_processedPaths.insert(path);
+            m_processedPaths.insert(utf8Path);
         }
         
         // Create node and get the directory entry size
-        auto node = std::make_shared<FileNode>(path, 0, true);
+        auto node = std::make_shared<FileNode>(utf8Path, 0, true);
         try {
             // Get the directory entry size using stat to get accurate size
             struct stat st;
-            if (stat(path.c_str(), &st) == 0) {
+            if (stat(utf8Path.c_str(), &st) == 0) {
                 node->size = st.st_size;
             }
         } catch (const std::exception&) {
@@ -83,8 +89,8 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             if (!batch.empty()) {
                 processBatch(batch, node, depth, futures);
             }
-        } catch (const std::exception&) {
-            // Skip inaccessible directories
+        } catch (const std::exception& e) {
+            std::cerr << "Error reading directory " << utf8Path << ": " << e.what() << std::endl;
         }
         
         // Process futures if any
@@ -94,8 +100,8 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
                     node->size += childNode->size;
                     node->children.push_back(childNode);
                 }
-            } catch (const std::exception&) {
-                // Skip failed futures
+            } catch (const std::exception& e) {
+                std::cerr << "Error processing future for " << utf8Path << ": " << e.what() << std::endl;
             }
         }
         
@@ -105,7 +111,8 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         }
         
         return node;
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        std::cerr << "Error processing directory " << path << ": " << e.what() << std::endl;
         return nullptr;
     }
 }
@@ -116,7 +123,8 @@ std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path,
 
 uint64_t FZC::getFileSize(const std::string& path) {
     try {
-        return fs::file_size(fs::path(path));
+        fs::path filePath(path);
+        return fs::file_size(filePath);
     } catch (const std::exception& e) {
         std::cerr << "Error getting file size for " << path 
                   << ": " << e.what() << std::endl;
@@ -132,6 +140,8 @@ void FZC::processBatch(
 {
     for (const auto& entry : batch) {
         try {
+            std::string entryPath = toUTF8(entry.path());
+            
             if (entry.is_directory()) {
                 bool useParallel = (depth < m_maxDepthForParallelism && m_useParallelProcessing);
                 if (useParallel) {
@@ -142,8 +152,8 @@ void FZC::processBatch(
                         lock.unlock();
                         
                         // Process in parallel
-                        auto future = std::async(std::launch::async, [this, entry, depth]() {
-                            auto result = processDirectoryParallel(entry.path().string(), depth + 1);
+                        auto future = std::async(std::launch::async, [this, entryPath, depth]() {
+                            auto result = processDirectoryParallel(entryPath, depth + 1);
                             m_activeThreads--;
                             return result;
                         });
@@ -153,21 +163,21 @@ void FZC::processBatch(
                 }
                 
                 // Process sequentially if we can't use parallelism
-                auto childNode = processDirectory(entry.path().string(), depth + 1);
+                auto childNode = processDirectory(entryPath, depth + 1);
                 if (childNode) {
                     node->size += childNode->size;
                     node->children.push_back(childNode);
                 }
             } else if (entry.is_regular_file()) {
-                uint64_t fileSize = getFileSize(entry.path().string());
+                uint64_t fileSize = getFileSize(entryPath);
                 if (fileSize > 0) {
-                    auto fileNode = std::make_shared<FileNode>(entry.path().string(), fileSize, false);
+                    auto fileNode = std::make_shared<FileNode>(entryPath, fileSize, false);
                     node->size += fileSize;
                     node->children.push_back(fileNode);
                 }
             }
-        } catch (const std::exception&) {
-            // Skip problematic entries
+        } catch (const std::exception& e) {
+            std::cerr << "Error processing entry: " << e.what() << std::endl;
         }
     }
     batch.clear();
@@ -176,18 +186,28 @@ void FZC::processBatch(
 // C-style interface implementation
 extern "C" {
     FolderSizeResultPtr calculateFolderSizes(const char* rootPath) {
-        // Use default settings (parallel processing with auto thread count)
-        FZC calculator(true, 0);
-        auto result = calculator.calculateFolderSizes(rootPath);
-        // Transfer ownership to C interface
-        return static_cast<void*>(new FolderSizeResult(std::move(result)));
+        try {
+            // Use default settings (parallel processing with auto thread count)
+            FZC calculator(true, 0);
+            auto result = calculator.calculateFolderSizes(rootPath);
+            // Transfer ownership to C interface
+            return static_cast<void*>(new FolderSizeResult(std::move(result)));
+        } catch (const std::exception& e) {
+            std::cerr << "Error calculating folder sizes: " << e.what() << std::endl;
+            return nullptr;
+        }
     }
     
     FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads) {
-        FZC calculator(useParallelProcessing, maxThreads);
-        auto result = calculator.calculateFolderSizes(rootPath);
-        // Transfer ownership to C interface
-        return static_cast<void*>(new FolderSizeResult(std::move(result)));
+        try {
+            FZC calculator(useParallelProcessing, maxThreads);
+            auto result = calculator.calculateFolderSizes(rootPath);
+            // Transfer ownership to C interface
+            return static_cast<void*>(new FolderSizeResult(std::move(result)));
+        } catch (const std::exception& e) {
+            std::cerr << "Error calculating folder sizes: " << e.what() << std::endl;
+            return nullptr;
+        }
     }
     
     FileNodePtr getResultRootNode(FolderSizeResultPtr result) {
