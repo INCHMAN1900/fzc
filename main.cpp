@@ -46,6 +46,7 @@ void printUsage() {
               << "  -t, --time-only    Display only the time taken for calculation\n"
               << "  -s, --sequential   Use sequential processing (disable parallel processing)\n"
               << "  -j, --threads N    Specify maximum number of threads to use (default: auto)\n"
+              << "  -r, --root-only    Only calculate the size of the root directory\n"
               << "  -h, --help         Display this help message\n";
 }
 
@@ -71,6 +72,7 @@ int main(int argc, char* argv[]) {
     bool useParallelProcessing = true;
     int maxThreads = 0;
     bool timeOnly = false;
+    bool rootOnly = false;
     
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -84,6 +86,9 @@ int main(int argc, char* argv[]) {
         }
         else if (arg == "-s" || arg == "--sequential") {
             useParallelProcessing = false;
+        }
+        else if (arg == "-r" || arg == "--root-only") {
+            rootOnly = true;
         }
         else if (arg == "-j" || arg == "--threads") {
             if (i + 1 < argc) {
@@ -127,7 +132,7 @@ int main(int argc, char* argv[]) {
     FZC calculator(useParallelProcessing, maxThreads);
     
     // Calculate sizes
-    auto result = calculator.calculateFolderSizes(directoryPath);
+    auto result = calculator.calculateFolderSizes(directoryPath, rootOnly);
     
     // Print results
     if (!timeOnly) {

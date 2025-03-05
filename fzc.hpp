@@ -45,7 +45,7 @@ public:
     FZC(bool useParallelProcessing = true, int maxThreads = 0);
     
     // Calculate sizes and return the root node with timing information
-    FolderSizeResult calculateFolderSizes(const std::string& path);
+    FolderSizeResult calculateFolderSizes(const std::string& path, bool rootOnly = false);
     
 private:
     // Convert path to UTF-8 string and handle long paths
@@ -61,10 +61,10 @@ private:
     std::shared_ptr<FileNode> processFile(const std::string& path);
     
     // Recursive function to process directories
-    std::shared_ptr<FileNode> processDirectory(const std::string& path, int depth = 0);
+    std::shared_ptr<FileNode> processDirectory(const std::string& path, int depth = 0, bool rootOnly = false);
     
     // Parallel version of directory processing
-    std::shared_ptr<FileNode> processDirectoryParallel(const std::string& path, int depth = 0);
+    std::shared_ptr<FileNode> processDirectoryParallel(const std::string& path, int depth = 0, bool rootOnly = false);
     
     // Helper function to get file size
     uint64_t getFileSize(const std::string& path);
@@ -101,10 +101,10 @@ extern "C" {
     typedef void* FolderSizeResultPtr;
     
     // Function to calculate folder sizes and return the result
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath);
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly);
     
     // Function to calculate folder sizes with parallel processing options
-    FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads);
+    FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads, bool rootOnly);
     
     // Functions to access node properties
     const char* getNodePath(FileNodePtr node);
