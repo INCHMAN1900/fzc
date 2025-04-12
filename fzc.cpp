@@ -15,6 +15,32 @@ std::pair<std::string, std::string> FZC::toUTF8AndWorkPath(const fs::path& path)
     return {fullPath, workPath};
 }
 
+/// Use bit mode to check if path is a symlink.
+bool FZC::isSymLink(const std::string& path) {
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0) {
+        return false;
+    }
+    return (st.st_mode & 0170000) == 0120000;
+}
+
+std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path, bool followSymlink) {
+    struct stat st;
+    int result;
+    
+    if (followSymlink) {
+        result = stat(path.c_str(), &st);
+    } else {
+        result = lstat(path.c_str(), &st);
+    }
+    
+    if (result != 0) {
+        return {0, false};
+    }
+    
+    return {st.st_size, (st.st_mode & S_IFMT) == S_IFDIR};
+}
+
 // Constructor with parallelism configuration
 FZC::FZC(bool useParallelProcessing, int maxThreads)
     : m_useParallelProcessing(useParallelProcessing),
@@ -38,7 +64,7 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
     std::shared_ptr<FileNode> rootNode;
     
     try {
-        if (fs::is_symlink(fsPath)) {
+        if (isSymLink(path)) {
             // For symlinks, just get the symlink size without following
             rootNode = processFile(path);
         } else if (fs::is_regular_file(fsPath)) {
@@ -65,8 +91,9 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
 std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int depth, bool rootOnly) {
     try {
         fs::path dirPath(path);
-        if (!fs::exists(dirPath)) {
-            return nullptr;
+        // 检查路径存在且不是 symlink
+        if (!fs::exists(dirPath) || isSymLink(path)) {
+            return processFile(path);  // 如果是 symlink，按文件处理
         }
         
         auto pathPair = toUTF8AndWorkPath(dirPath);
@@ -179,15 +206,16 @@ void FZC::processBatch(
             std::string fullPath = pathPair.first;
             std::string workPath = pathPair.second;
             
-            if (fs::is_symlink(entry)) {
-                // For symlinks, just get the symlink size without following
-                struct stat st;
-                if (lstat(workPath.c_str(), &st) == 0) {
-                    auto symlinkNode = std::make_shared<FileNode>(fullPath, workPath, st.st_size, false);
-                    node->size += symlinkNode->size;
-                    node->children.push_back(symlinkNode);
-                }
-            } else if (entry.is_directory()) {
+            if (isSymLink(workPath)) {
+                auto [size, _] = getFileInfo(workPath, false);
+                auto symlinkNode = std::make_shared<FileNode>(fullPath, workPath, size, false);
+                node->size += symlinkNode->size;
+                node->children.push_back(symlinkNode);
+                continue;
+            }
+            
+            auto [size, isDir] = getFileInfo(workPath, true);
+            if (isDir) {
                 bool useParallel = (depth < m_maxDepthForParallelism && m_useParallelProcessing);
                 if (useParallel) {
                     // Check if we have available threads
@@ -215,11 +243,10 @@ void FZC::processBatch(
                     node->size += childNode->size;
                     node->children.push_back(childNode);
                 }
-            } else if (entry.is_regular_file()) {
-                uint64_t fileSize = getFileSize(workPath);
-                if (fileSize > 0) {
-                    auto fileNode = std::make_shared<FileNode>(fullPath, workPath, fileSize, false);
-                    node->size += fileSize;
+            } else {
+                if (size > 0) {
+                    auto fileNode = std::make_shared<FileNode>(fullPath, workPath, size, false);
+                    node->size += size;
                     node->children.push_back(fileNode);
                 }
             }
@@ -233,12 +260,12 @@ void FZC::processBatch(
 
 std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
     try {
-        fs::path filePath(path);
-        if (!fs::exists(filePath)) {
+        auto [size, isDir] = getFileInfo(path, false);  // 不跟随符号链接
+        if (size == 0 && !isDir) {
             return nullptr;
         }
         
-        auto pathPair = toUTF8AndWorkPath(filePath);
+        auto pathPair = toUTF8AndWorkPath(fs::path(path));
         std::string fullPath = pathPair.first;
         std::string workPath = pathPair.second;
         
@@ -247,22 +274,8 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
             m_pathMap[workPath] = fullPath;
         }
         
-        if (fs::is_symlink(filePath)) {
-            // For symlinks, just get the symlink size without following
-            struct stat st;
-            if (lstat(workPath.c_str(), &st) == 0) {
-                return std::make_shared<FileNode>(fullPath, workPath, st.st_size, false);
-            }
-            return std::make_shared<FileNode>(fullPath, workPath, 0, false);
-        }
-        
-        uint64_t fileSize = getFileSize(workPath);
-        if (fileSize > 0) {
-            return std::make_shared<FileNode>(fullPath, workPath, fileSize, false);
-        }
-        return nullptr;
+        return std::make_shared<FileNode>(fullPath, workPath, size, isDir);
     } catch (const std::exception&) {
-        // Return nullptr for any file we can't access
         return nullptr;
     }
 }
@@ -350,4 +363,4 @@ extern "C" {
             delete static_cast<FolderSizeResult*>(result);
         }
     }
-} 
+}

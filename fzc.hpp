@@ -92,6 +92,9 @@ private:
     // Map to store working path to full path mapping
     std::unordered_map<std::string, std::string> m_pathMap;
     std::mutex m_pathMapMutex;
+
+    bool isSymLink(const std::string& path);
+    std::pair<uint64_t, bool> getFileInfo(const std::string& path, bool followSymlink);
 };
 
 // C-style interface for Swift interoperability
@@ -122,4 +125,4 @@ extern "C" {
     void releaseResult(FolderSizeResultPtr result);
 }
 
-#endif // FZC_HPP 
+#endif // FZC_HPP
