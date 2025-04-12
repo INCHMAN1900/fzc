@@ -8,22 +8,6 @@
 
 namespace fs = std::filesystem;
 
-// Helper function to ensure the /tmp/udu directory exists
-void FZC::ensureTempDirExists() {
-    static std::once_flag flag;
-    std::call_once(flag, []() {
-        fs::path tempDir("/tmp/udu");
-        if (!fs::exists(tempDir)) {
-            fs::create_directory(tempDir);
-        }
-    });
-}
-
-// Helper function to get a shortened path and create a symbolic link
-std::string FZC::getShortenedPath(const std::string& path) {
-    return path;
-}
-
 // Helper function to convert path to UTF-8 string and handle long paths
 std::pair<std::string, std::string> FZC::toUTF8AndWorkPath(const fs::path& path) {
     std::string fullPath = path.string();  // std::filesystem already handles UTF-8 on macOS
@@ -56,13 +40,7 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
     try {
         if (fs::is_symlink(fsPath)) {
             // For symlinks, just get the symlink size without following
-            auto pathPair = toUTF8AndWorkPath(fsPath);
-            struct stat st;
-            if (lstat(pathPair.second.c_str(), &st) == 0) {
-                rootNode = std::make_shared<FileNode>(pathPair.first, pathPair.second, st.st_size, false);
-            } else {
-                rootNode = std::make_shared<FileNode>(pathPair.first, pathPair.second, 0, false);
-            }
+            rootNode = processFile(path);
         } else if (fs::is_regular_file(fsPath)) {
             rootNode = processFile(path);
         } else if (fs::is_directory(fsPath)) {
@@ -76,7 +54,7 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
         std::cerr << "Error processing path: " << e.what() << std::endl;
         rootNode = nullptr;
     }
-    
+
     // Calculate elapsed time
     auto endTime = std::chrono::high_resolution_clock::now();
     double elapsedTimeMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
