@@ -8,6 +8,15 @@
 
 namespace fs = std::filesystem;
 
+// Ignored paths.
+const std::vector<std::string> FZC::skipPaths = {
+    "/System/Volumes/Data",
+    "/System/Volumes/Preboot",
+    "/System/Volumes/VM",
+    "/System/Volumes/Update",
+    "/Volumes"  // 外接盘目录
+};
+
 // Helper function to convert path to UTF-8 string and handle long paths
 std::pair<std::string, std::string> FZC::toUTF8AndWorkPath(const fs::path& path) {
     std::string fullPath = path.string();  // std::filesystem already handles UTF-8 on macOS
@@ -47,13 +56,10 @@ FZC::FZC(bool useParallelProcessing, int maxThreads)
       m_maxThreads(maxThreads),
       m_maxDepthForParallelism(8)
 {
-    // 获取系统核心数
     int systemCores = std::thread::hardware_concurrency();
     
-    // 如果 maxThreads 未指定或无效，直接使用系统核心数
     if (m_maxThreads <= 0) {
         m_maxThreads = systemCores;
-        // 确保至少有一个线程
         if (m_maxThreads < 1) m_maxThreads = 1;
     }
 }
@@ -91,12 +97,45 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
     return FolderSizeResult(rootNode, elapsedTimeMs);
 }
 
+bool FZC::canAccessDirectory(const std::string& path) {
+    try {
+        // 尝试打开目录
+        fs::directory_iterator it(path);
+        return true;
+    } catch (const fs::filesystem_error& e) {
+        return false;
+    }
+}
+
+bool FZC::shouldSkipDirectory(const std::string& path) {
+    for (const auto& skipPath : skipPaths) {
+        if (path == skipPath || 
+            (path.length() > skipPath.length() && 
+             path.substr(0, skipPath.length()) == skipPath && 
+             path[skipPath.length()] == '/')) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int depth, bool rootOnly) {
     try {
         fs::path dirPath(path);
-        // 检查路径存在且不是 symlink
         if (!fs::exists(dirPath) || isSymLink(path)) {
-            return processFile(path);  // 如果是 symlink，按文件处理
+            return processFile(path);
+        }
+        
+        if (shouldSkipDirectory(path)) {
+            return nullptr;
+        }
+        
+        if (!canAccessDirectory(path)) {
+            auto pathPair = toUTF8AndWorkPath(dirPath);
+            auto node = std::make_shared<FileNode>(pathPair.first, pathPair.second, 0, true);
+            auto [size, _] = getFileInfo(path, true);
+            node->size = size;
+            return node;
         }
         
         auto pathPair = toUTF8AndWorkPath(dirPath);
@@ -135,17 +174,23 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         
         try {
             for (const auto& entry : fs::directory_iterator(dirPath)) {
-                batch.push_back(entry);
-                if (batch.size() >= BATCH_SIZE) {
-                    processBatch(batch, node, depth, futures);
+                try {
+                    batch.push_back(entry);
+                    if (batch.size() >= BATCH_SIZE) {
+                        processBatch(batch, node, depth, futures);
+                    }
+                } catch (const fs::filesystem_error&) {
+                    // 跳过无法访问的条目
+                    continue;
                 }
             }
             
             if (!batch.empty()) {
                 processBatch(batch, node, depth, futures);
             }
-        } catch (const std::exception&) {
-            // Silently handle directory iteration errors
+        } catch (const fs::filesystem_error&) {
+            // 如果遍历过程中出现权限错误，返回已收集的信息
+            return node;
         }
         
         // Process futures if any
@@ -221,6 +266,13 @@ void FZC::processBatch(
             
             auto [size, isDir] = getFileInfo(workPath, true);
             if (isDir) {
+                if (!canAccessDirectory(workPath)) {
+                    auto dirNode = std::make_shared<FileNode>(fullPath, workPath, size, true);
+                    node->size += size;
+                    node->children.push_back(dirNode);
+                    continue;
+                }
+                
                 bool useParallel = (depth < m_maxDepthForParallelism && m_useParallelProcessing);
                 if (useParallel) {
                     parallelDirs.emplace_back(workPath, depth);
@@ -280,7 +332,7 @@ void FZC::processBatch(
 
 std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
     try {
-        auto [size, isDir] = getFileInfo(path, false);  // 不跟随符号链接
+        auto [size, isDir] = getFileInfo(path, false);
         if (size == 0 && !isDir) {
             return nullptr;
         }
