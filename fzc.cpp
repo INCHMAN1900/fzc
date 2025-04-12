@@ -45,13 +45,16 @@ std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path, bool followS
 FZC::FZC(bool useParallelProcessing, int maxThreads)
     : m_useParallelProcessing(useParallelProcessing),
       m_maxThreads(maxThreads),
-      m_maxDepthForParallelism(4) // Only use parallelism for top levels of directory tree
+      m_maxDepthForParallelism(8)
 {
-    // If maxThreads is 0 or negative, use the number of hardware threads
+    // 获取系统核心数
+    int systemCores = std::thread::hardware_concurrency();
+    
+    // 如果 maxThreads 未指定或无效，直接使用系统核心数
     if (m_maxThreads <= 0) {
-        m_maxThreads = std::thread::hardware_concurrency();
-        // Ensure at least 2 threads
-        if (m_maxThreads < 2) m_maxThreads = 2;
+        m_maxThreads = systemCores;
+        // 确保至少有一个线程
+        if (m_maxThreads < 1) m_maxThreads = 1;
     }
 }
 
@@ -200,6 +203,8 @@ void FZC::processBatch(
     int depth,
     std::vector<std::future<std::shared_ptr<FileNode>>>& futures)
 {
+    std::vector<std::pair<std::string, int>> parallelDirs;
+    
     for (const auto& entry : batch) {
         try {
             auto pathPair = toUTF8AndWorkPath(entry.path());
@@ -218,23 +223,8 @@ void FZC::processBatch(
             if (isDir) {
                 bool useParallel = (depth < m_maxDepthForParallelism && m_useParallelProcessing);
                 if (useParallel) {
-                    // Check if we have available threads
-                    std::unique_lock<std::mutex> lock(m_threadMutex);
-                    if (m_activeThreads < m_maxThreads) {
-                        m_activeThreads++;
-                        lock.unlock();
-                        
-                        // Store workPath in a separate variable to avoid capturing structured bindings
-                        std::string capturedWorkPath = workPath;
-                        // Process in parallel
-                        auto future = std::async(std::launch::async, [this, capturedWorkPath, depth]() {
-                            auto result = processDirectoryParallel(capturedWorkPath, depth + 1, false);
-                            m_activeThreads--;
-                            return result;
-                        });
-                        futures.push_back(std::move(future));
-                        continue;
-                    }
+                    parallelDirs.emplace_back(workPath, depth);
+                    continue;
                 }
                 
                 // Process sequentially if we can't use parallelism
@@ -251,10 +241,40 @@ void FZC::processBatch(
                 }
             }
         } catch (const std::exception&) {
-            // Silently skip entries we can't access
             continue;
         }
     }
+    
+    if (!parallelDirs.empty()) {
+        std::unique_lock<std::mutex> lock(m_threadMutex);
+        for (const auto& dirInfo : parallelDirs) {
+            const std::string& workPath = dirInfo.first;
+            const int dirDepth = dirInfo.second;
+            
+            if (m_activeThreads < m_maxThreads) {
+                m_activeThreads++;
+                lock.unlock();
+                
+                auto future = std::async(std::launch::async, [this, workPath, dirDepth]() {
+                    auto result = processDirectoryParallel(workPath, dirDepth + 1, false);
+                    m_activeThreads--;
+                    return result;
+                });
+                futures.push_back(std::move(future));
+                
+                lock.lock();
+            } else {
+                lock.unlock();
+                auto childNode = processDirectory(workPath, dirDepth + 1, false);
+                if (childNode) {
+                    node->size += childNode->size;
+                    node->children.push_back(childNode);
+                }
+                lock.lock();
+            }
+        }
+    }
+    
     batch.clear();
 }
 
