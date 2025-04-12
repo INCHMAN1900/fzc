@@ -21,45 +21,13 @@ void FZC::ensureTempDirExists() {
 
 // Helper function to get a shortened path and create a symbolic link
 std::string FZC::getShortenedPath(const std::string& path) {
-    if (path.length() < PATH_MAX) {
-        return path;
-    }
-    
-    ensureTempDirExists();
-    
-    // Create a hash of the path
-    std::hash<std::string> hasher;
-    size_t hash = hasher(path);
-    
-    // Get the filename or last component
-    fs::path fsPath(path);
-    std::string filename = fsPath.filename().string();
-    
-    // Create a shortened path with hash
-    std::stringstream ss;
-    ss << "/tmp/udu/" << std::hex << hash;
-    if (!filename.empty()) {
-        ss << "_" << filename;
-    }
-    std::string shortPath = ss.str();
-    
-    // Create symbolic link if it doesn't exist
-    try {
-        if (!fs::exists(shortPath)) {
-            fs::create_symlink(fsPath, shortPath);
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "Warning: Failed to create symlink for " << path << ": " << e.what() << std::endl;
-        return path; // Fall back to original path if symlink creation fails
-    }
-    
-    return shortPath;
+    return path;
 }
 
 // Helper function to convert path to UTF-8 string and handle long paths
 std::pair<std::string, std::string> FZC::toUTF8AndWorkPath(const fs::path& path) {
     std::string fullPath = path.string();  // std::filesystem already handles UTF-8 on macOS
-    std::string workPath = getShortenedPath(fullPath);
+    std::string workPath = fullPath;
     return {fullPath, workPath};
 }
 
