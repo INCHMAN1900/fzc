@@ -14,6 +14,8 @@
 #include <locale>
 #include <codecvt>
 #include <unordered_map>
+#include <deque>
+#include <condition_variable>
 
 namespace fs = std::filesystem;
 
@@ -73,13 +75,13 @@ private:
     bool m_useParallelProcessing;
     int m_maxThreads;
     int m_maxDepthForParallelism;
-    static constexpr size_t BATCH_SIZE = 100;  // Size of batches for processing
+    static constexpr size_t BATCH_SIZE = 20;
     
     // Thread management
     std::atomic<int> m_activeThreads{0};
     std::mutex m_threadMutex;
     
-    // Cache for processed paths to avoid cycles
+    // Cache for processed paths
     std::unordered_set<std::string> m_processedPaths;
     std::mutex m_cacheMutex;
     
@@ -88,7 +90,7 @@ private:
     std::mutex m_pathMapMutex;
 
     bool isSymLink(const std::string& path);
-    std::pair<uint64_t, bool> getFileInfo(const std::string& path);  // Removed followSymlink parameter
+    std::pair<uint64_t, bool> getFileInfo(const std::string& path);
     bool shouldSkipDirectory(const std::string& path);
     static const std::vector<std::string> skipPaths;
 };
