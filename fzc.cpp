@@ -97,16 +97,6 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
     return FolderSizeResult(rootNode, elapsedTimeMs);
 }
 
-bool FZC::canAccessDirectory(const std::string& path) {
-    try {
-        // 尝试打开目录
-        fs::directory_iterator it(path, fs::directory_options::skip_permission_denied);
-        return true;
-    } catch (const fs::filesystem_error& e) {
-        return false;
-    }
-}
-
 bool FZC::shouldSkipDirectory(const std::string& path) {
     for (const auto& skipPath : skipPaths) {
         if (path == skipPath || 
@@ -128,14 +118,6 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         
         if (shouldSkipDirectory(path)) {
             return nullptr;
-        }
-        
-        if (!canAccessDirectory(path)) {
-            auto pathPair = toUTF8AndWorkPath(dirPath);
-            auto node = std::make_shared<FileNode>(pathPair.first, pathPair.second, 0, true);
-            auto [size, _] = getFileInfo(path, true);
-            node->size = size;
-            return node;
         }
         
         auto pathPair = toUTF8AndWorkPath(dirPath);
@@ -266,13 +248,6 @@ void FZC::processBatch(
             
             auto [size, isDir] = getFileInfo(workPath, true);
             if (isDir) {
-                if (!canAccessDirectory(workPath)) {
-                    auto dirNode = std::make_shared<FileNode>(fullPath, workPath, size, true);
-                    node->size += size;
-                    node->children.push_back(dirNode);
-                    continue;
-                }
-                
                 bool useParallel = (depth < m_maxDepthForParallelism && m_useParallelProcessing);
                 if (useParallel) {
                     parallelDirs.emplace_back(workPath, depth);
