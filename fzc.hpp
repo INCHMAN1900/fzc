@@ -48,12 +48,6 @@ public:
     FolderSizeResult calculateFolderSizes(const std::string& path, bool rootOnly = false);
     
 private:
-    // Convert path to UTF-8 string and handle long paths
-    static std::pair<std::string, std::string> toUTF8AndWorkPath(const fs::path& path);
-    
-    // Get a shortened working path for long paths
-    static std::string getShortenedPath(const std::string& path);
-    
     // Ensure temporary directory exists
     static void ensureTempDirExists();
     
@@ -94,8 +88,7 @@ private:
     std::mutex m_pathMapMutex;
 
     bool isSymLink(const std::string& path);
-    std::pair<uint64_t, bool> getFileInfo(const std::string& path, bool followSymlink);
-    bool canAccessDirectory(const std::string& path);
+    std::pair<uint64_t, bool> getFileInfo(const std::string& path);  // Removed followSymlink parameter
     bool shouldSkipDirectory(const std::string& path);
     static const std::vector<std::string> skipPaths;
 };

@@ -17,13 +17,6 @@ const std::vector<std::string> FZC::skipPaths = {
     "/Volumes"  // 外接盘目录
 };
 
-// Helper function to convert path to UTF-8 string and handle long paths
-std::pair<std::string, std::string> FZC::toUTF8AndWorkPath(const fs::path& path) {
-    std::string fullPath = path.string();  // std::filesystem already handles UTF-8 on macOS
-    std::string workPath = fullPath;
-    return {fullPath, workPath};
-}
-
 /// Use bit mode to check if path is a symlink.
 bool FZC::isSymLink(const std::string& path) {
     struct stat st;
@@ -33,20 +26,11 @@ bool FZC::isSymLink(const std::string& path) {
     return (st.st_mode & 0170000) == 0120000;
 }
 
-std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path, bool followSymlink) {
+std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
     struct stat st;
-    int result;
-    
-    if (followSymlink) {
-        result = stat(path.c_str(), &st);
-    } else {
-        result = lstat(path.c_str(), &st);
-    }
-    
-    if (result != 0) {
+    if (lstat(path.c_str(), &st) != 0) {
         return {0, false};
     }
-    
     return {st.st_size, (st.st_mode & S_IFMT) == S_IFDIR};
 }
 
@@ -120,9 +104,7 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             return nullptr;
         }
         
-        auto pathPair = toUTF8AndWorkPath(dirPath);
-        std::string fullPath = pathPair.first;
-        std::string workPath = pathPair.second;
+        std::string workPath = dirPath.string();
         
         {
             std::lock_guard<std::mutex> lock(m_cacheMutex);
@@ -134,11 +116,11 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         
         {
             std::lock_guard<std::mutex> lock(m_pathMapMutex);
-            m_pathMap[workPath] = fullPath;
+            m_pathMap[workPath] = workPath;
         }
         
         // Create node and get the directory entry size
-        auto node = std::make_shared<FileNode>(fullPath, workPath, 0, true);
+        auto node = std::make_shared<FileNode>(workPath, workPath, 0, true);
         try {
             // Get the directory entry size using stat to get accurate size
             struct stat st;
@@ -234,19 +216,17 @@ void FZC::processBatch(
     
     for (const auto& entry : batch) {
         try {
-            auto pathPair = toUTF8AndWorkPath(entry.path());
-            std::string fullPath = pathPair.first;
-            std::string workPath = pathPair.second;
+            std::string workPath = entry.path().string();
             
             if (isSymLink(workPath)) {
-                auto [size, _] = getFileInfo(workPath, false);
-                auto symlinkNode = std::make_shared<FileNode>(fullPath, workPath, size, false);
+                auto [size, _] = getFileInfo(workPath);
+                auto symlinkNode = std::make_shared<FileNode>(workPath, workPath, size, false);
                 node->size += symlinkNode->size;
                 node->children.push_back(symlinkNode);
                 continue;
             }
             
-            auto [size, isDir] = getFileInfo(workPath, true);
+            auto [size, isDir] = getFileInfo(workPath);
             if (isDir) {
                 bool useParallel = (depth < m_maxDepthForParallelism && m_useParallelProcessing);
                 if (useParallel) {
@@ -262,7 +242,7 @@ void FZC::processBatch(
                 }
             } else {
                 if (size > 0) {
-                    auto fileNode = std::make_shared<FileNode>(fullPath, workPath, size, false);
+                    auto fileNode = std::make_shared<FileNode>(workPath, workPath, size, false);
                     node->size += size;
                     node->children.push_back(fileNode);
                 }
@@ -307,21 +287,19 @@ void FZC::processBatch(
 
 std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
     try {
-        auto [size, isDir] = getFileInfo(path, false);
+        auto [size, isDir] = getFileInfo(path);
         if (size == 0 && !isDir) {
             return nullptr;
         }
         
-        auto pathPair = toUTF8AndWorkPath(fs::path(path));
-        std::string fullPath = pathPair.first;
-        std::string workPath = pathPair.second;
+        std::string workPath = fs::path(path).string();
         
         {
             std::lock_guard<std::mutex> lock(m_pathMapMutex);
-            m_pathMap[workPath] = fullPath;
+            m_pathMap[workPath] = workPath;
         }
         
-        return std::make_shared<FileNode>(fullPath, workPath, size, isDir);
+        return std::make_shared<FileNode>(workPath, workPath, size, isDir);
     } catch (const std::exception&) {
         return nullptr;
     }
