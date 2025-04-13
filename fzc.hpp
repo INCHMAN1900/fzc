@@ -75,7 +75,7 @@ private:
     bool m_useParallelProcessing;
     int m_maxThreads;
     int m_maxDepthForParallelism;
-    static constexpr size_t BATCH_SIZE = 20;
+    static constexpr size_t BATCH_SIZE = 64;
     
     // Thread management
     std::atomic<int> m_activeThreads{0};
