@@ -100,7 +100,7 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
 bool FZC::canAccessDirectory(const std::string& path) {
     try {
         // 尝试打开目录
-        fs::directory_iterator it(path);
+        fs::directory_iterator it(path, fs::directory_options::skip_permission_denied);
         return true;
     } catch (const fs::filesystem_error& e) {
         return false;
@@ -173,7 +173,7 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         std::vector<std::future<std::shared_ptr<FileNode>>> futures;
         
         try {
-            for (const auto& entry : fs::directory_iterator(dirPath)) {
+            for (const auto& entry : fs::directory_iterator(dirPath, fs::directory_options::skip_permission_denied)) {
                 try {
                     batch.push_back(entry);
                     if (batch.size() >= BATCH_SIZE) {
