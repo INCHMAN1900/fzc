@@ -92,6 +92,10 @@ private:
     bool isSymLink(const std::string& path);
     std::pair<uint64_t, bool> getFileInfo(const std::string& path);
     bool shouldSkipDirectory(const std::string& path);
+    std::unordered_set<std::string> getMountPoints();
+    bool isMountPoint(const std::string& path);
+    bool isSubPathOfMountPoint(const std::string& path);
+    std::unordered_set<std::string> m_mountPoints;
     static const std::vector<std::string> skipPaths;
 };
 

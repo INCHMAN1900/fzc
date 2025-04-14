@@ -3,10 +3,18 @@
 #include <iostream>
 #include <algorithm>
 #include <sys/stat.h>
+#include <sys/mount.h>  // for getmntinfo
+#include <sys/param.h>
 #include <limits.h>
 #include <sstream>
 
 namespace fs = std::filesystem;
+
+// Helper function declarations
+inline bool startsWith(const std::string& str, const std::string& prefix) {
+    return str.length() >= prefix.length() && 
+           str.substr(0, prefix.length()) == prefix;
+}
 
 // Ignored paths.
 const std::vector<std::string> FZC::skipPaths = {
@@ -38,13 +46,60 @@ std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
 FZC::FZC(bool useParallelProcessing, int maxThreads)
     : m_useParallelProcessing(useParallelProcessing),
       m_maxThreads(maxThreads),
-      m_maxDepthForParallelism(8)
-{
+      m_maxDepthForParallelism(8) {
     int systemCores = std::thread::hardware_concurrency();
     if (m_maxThreads <= 0) {
         m_maxThreads = systemCores;
         if (m_maxThreads < 1) m_maxThreads = 1;
     }
+    m_mountPoints = getMountPoints();
+}
+
+std::unordered_set<std::string> FZC::getMountPoints() {
+    std::unordered_set<std::string> mountPoints;
+    struct statfs* mntbuf;
+    int mounts = getmntinfo(&mntbuf, MNT_WAIT);
+    
+    if (mounts > 0) {
+        for (int i = 0; i < mounts; i++) {
+            const auto& fs = mntbuf[i];
+            std::string mountPath = fs.f_mntonname;
+            
+            // 只关注 /Volumes 下的挂载点
+            if (startsWith(mountPath, "/Volumes/")) {
+                // 排除系统盘和系统相关挂载
+                if (strcmp(fs.f_mntonname, "/") != 0 && 
+                    strstr(fs.f_mntonname, "/System/Volumes") == nullptr) {
+                    
+                    // 检查是否是外部文件系统
+                    if ((fs.f_flags & MNT_LOCAL) == 0 ||     // 网络挂载
+                        (fs.f_flags & MNT_REMOVABLE) ||      // 可移动设备
+                        strncmp(fs.f_fstypename, "hfs", 3) == 0 ||   // 外接 HFS+ 磁盘
+                        strncmp(fs.f_fstypename, "apfs", 4) == 0) {  // 外接 APFS 磁盘
+                        mountPoints.insert(mountPath);
+                    }
+                }
+            }
+        }
+    }
+    return mountPoints;
+}
+
+bool FZC::isMountPoint(const std::string& path) {
+    return m_mountPoints.find(path) != m_mountPoints.end();
+}
+
+bool FZC::isSubPathOfMountPoint(const std::string& path) {
+    if (path.empty()) return false;
+    
+    for (const auto& mount : m_mountPoints) {
+        if (path.length() > mount.length() && 
+            path.substr(0, mount.length()) == mount && 
+            path[mount.length()] == '/') {
+            return true;
+        }
+    }
+    return false;
 }
 
 FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly) {
@@ -72,23 +127,43 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
         std::cerr << "Error processing path: " << e.what() << std::endl;
         rootNode = nullptr;
     }
-
+    
     // Calculate elapsed time
     auto endTime = std::chrono::high_resolution_clock::now();
     double elapsedTimeMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-    
     return FolderSizeResult(rootNode, elapsedTimeMs);
 }
 
 bool FZC::shouldSkipDirectory(const std::string& path) {
+    // 如果是系统相关路径，直接跳过
     for (const auto& skipPath : skipPaths) {
-        if (path == skipPath || 
-            (path.length() > skipPath.length() && 
-             path.substr(0, skipPath.length()) == skipPath && 
-             path[skipPath.length()] == '/')) {
+        if (startsWith(path, skipPath)) {
             return true;
         }
     }
+    
+    // 如果路径是挂载点
+    if (isMountPoint(path)) {
+        // 如果是入口路径（第一个处理的路径）
+        if (m_processedPaths.empty()) {
+            return false;  // 不跳过，允许处理这个挂载点
+        }
+        // 如果不是入口路径，说明是内部遇到的其他挂载点，跳过
+        return true;
+    }
+    
+    // 如果路径不是挂载点，但是其父目录中包含挂载点
+    if (isSubPathOfMountPoint(path)) {
+        // 如果入口路径就是挂载点，允许继续处理
+        bool isEntryMountPoint = false;
+        if (!m_processedPaths.empty()) {
+            auto firstPath = *m_processedPaths.begin();
+            isEntryMountPoint = isMountPoint(firstPath);
+        }
+        // 如果入口是挂载点则继续处理，否则跳过
+        return !isEntryMountPoint;
+    }
+    
     return false;
 }
 
@@ -104,9 +179,8 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         }
         
         std::string workPath = dirPath.string();
-        
         {
-            std::lock_guard<std::mutex> lock(m_cacheMutex);
+            std::lock_guard<std::mutex> lock(m_pathMapMutex);
             if (m_processedPaths.find(workPath) != m_processedPaths.end()) {
                 return nullptr;
             }
@@ -114,7 +188,7 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         }
         
         {
-            std::lock_guard<std::mutex> lock(m_pathMapMutex);
+            std::lock_guard<std::mutex> lock(m_cacheMutex);
             m_pathMap[workPath] = workPath;
         }
         
@@ -158,27 +232,28 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
                         node->size += childNode->size;
                         node->children.push_back(childNode);
                     }
-                } catch (const std::exception&) {}
+                } catch (const std::exception&) {
+                }
             }
             
-        } catch (const fs::filesystem_error&) {
-            return node;
-        }
-        
-        if (!node->children.empty()) {
-            // Sort by size in descending order, then by path for stable ordering
-            std::sort(node->children.begin(), node->children.end(),
-                     [](const auto& a, const auto& b) {
-                         if (a->size != b->size) {
-                             return a->size > b->size;  // Descending order by size
-                         }
-                         return a->path < b->path;      // Ascending order by path if sizes are equal
-                     });
-        }
-        
-        // If rootOnly is true, clear children after calculating total size
-        if (rootOnly) {
-            node->children.clear();
+            if (!node->children.empty()) {
+                // Sort by size in descending order, then by path for stable ordering
+                std::sort(node->children.begin(), node->children.end(),
+                          [](const auto& a, const auto& b) {
+                              if (a->size != b->size) {
+                                  return a->size > b->size;  // Descending order by size
+                              }
+                              return a->path < b->path;      // Ascending order by path if sizes are equal
+                          });
+            }
+            
+            // If rootOnly is true, clear children after calculating total size
+            if (rootOnly) {
+                node->children.clear();
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error processing directory: " << e.what() << std::endl;
+            return nullptr;
         }
         
         return node;
@@ -206,8 +281,7 @@ void FZC::processBatch(
     std::vector<fs::directory_entry>& batch,
     std::shared_ptr<FileNode>& node,
     int depth,
-    std::vector<std::future<std::shared_ptr<FileNode>>>& futures)
-{
+    std::vector<std::future<std::shared_ptr<FileNode>>>& futures) {
     for (const auto& entry : batch) {
         try {
             std::string workPath = entry.path().string();
@@ -226,11 +300,11 @@ void FZC::processBatch(
                 if (m_activeThreads < m_maxThreads) {
                     m_activeThreads++;
                     futures.push_back(std::async(std::launch::async,
-                        [this, workPath, depth]() {
-                            auto result = processDirectory(workPath, depth + 1, false);
-                            m_activeThreads--;
-                            return result;
-                        }));
+                                                 [this, workPath, depth]() {
+                                                     auto result = processDirectory(workPath, depth + 1, false);
+                                                     m_activeThreads--;
+                                                     return result;
+                                                 }));
                     continue;
                 }
             }
@@ -261,7 +335,6 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
         }
         
         std::string workPath = fs::path(path).string();
-        
         {
             std::lock_guard<std::mutex> lock(m_pathMapMutex);
             m_pathMap[workPath] = workPath;
@@ -350,10 +423,5 @@ extern "C" {
             delete static_cast<std::shared_ptr<FileNode>*>(node);
         }
     }
-    
-    void releaseResult(FolderSizeResultPtr result) {
-        if (result) {
-            delete static_cast<FolderSizeResult*>(result);
-        }
-    }
+        void releaseResult(FolderSizeResultPtr result) {        if (result) {            delete static_cast<FolderSizeResult*>(result);        }    }
 }
