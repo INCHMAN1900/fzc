@@ -313,6 +313,8 @@ void FZC::processBatch(
             
             // 检查访问权限
             if (!hasAccessPermission(workPath)) {
+                auto unauthorizedNode = std::make_shared<FileNode>(workPath, workPath, 0, false);
+                node->children.push_back(unauthorizedNode);
                 continue;
             }
             
