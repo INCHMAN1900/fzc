@@ -97,6 +97,8 @@ private:
     bool isSubPathOfMountPoint(const std::string& path);
     std::unordered_set<std::string> m_mountPoints;
     std::string m_entryPath;  // 保存入口路径
+
+    bool hasAccessPermission(const std::string& path);
 };
 
 // C-style interface for Swift interoperability

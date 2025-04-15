@@ -3,8 +3,9 @@
 #include <iostream>
 #include <algorithm>
 #include <sys/stat.h>
-#include <sys/mount.h>  // for getmntinfo
+#include <sys/mount.h>
 #include <sys/param.h>
+#include <unistd.h>  // for access() and R_OK
 #include <limits.h>
 #include <sstream>
 
@@ -69,8 +70,9 @@ std::unordered_set<std::string> FZC::getMountPoints() {
             // 排除系统盘
             if (strcmp(fs.f_mntonname, "/") != 0) {
                 // 检查是否是外部文件系统
-                if ((fs.f_flags & MNT_LOCAL) == 0 ||    // 非本地地盘
-                    (fs.f_flags & MNT_REMOVABLE)) {     // 外接磁盘
+                if ((fs.f_flags & MNT_LOCAL) == 0 ||        // 非本地地盘
+                    (fs.f_flags & MNT_REMOVABLE) ||         // 外接磁盘
+                    strncmp(fs.f_fstypename, "apfs", 4)) {  // APFS 文件系统(/dev)
                     mountPoints.insert(mountPath);
                     std::cout << "Mount point: " << mountPath << ", removable:" << (fs.f_flags & MNT_REMOVABLE) << ", apfs:" << strncmp(fs.f_fstypename, "apfs", 4) << std::endl;
                 }
@@ -162,6 +164,11 @@ bool FZC::shouldSkipDirectory(const std::string& path) {
     return false;
 }
 
+// 添加权限检查函数
+bool FZC::hasAccessPermission(const std::string& path) {
+    return access(path.c_str(), R_OK) == 0;
+}
+
 std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int depth, bool rootOnly) {
     try {
         fs::path dirPath(path);
@@ -169,6 +176,11 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         
         // 创建节点，初始大小为0
         auto node = std::make_shared<FileNode>(workPath, workPath, 0, true);
+        
+        // 检查访问权限
+        if (!hasAccessPermission(workPath)) {
+            return node;
+        }
         
         // 如果是符号链接，作为文件处理
         if (isSymLink(path)) {
@@ -294,9 +306,15 @@ void FZC::processBatch(
     std::shared_ptr<FileNode>& node,
     int depth,
     std::vector<std::future<std::shared_ptr<FileNode>>>& futures) {
+    
     for (const auto& entry : batch) {
         try {
             std::string workPath = entry.path().string();
+            
+            // 检查访问权限
+            if (!hasAccessPermission(workPath)) {
+                continue;
+            }
             
             if (isSymLink(workPath)) {
                 auto [size, _] = getFileInfo(workPath);
@@ -336,6 +354,7 @@ void FZC::processBatch(
             continue;
         }
     }
+    
     batch.clear();
 }
 
