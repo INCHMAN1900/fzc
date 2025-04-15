@@ -175,14 +175,16 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             return processFile(path);
         }
         
-        // 检查是否是指向根目录下文件的硬链接
-        if (m_entryPath != "/" && !workPath.empty()) {
-            std::string rootPath = "/" + fs::path(workPath).filename().string();
-            if (fs::exists(rootPath) && is_hard_link(workPath, rootPath)) {
+        // 检查当前路径是否为根目录下某个直接子目录的硬链接
+        fs::path parentPath = dirPath.parent_path();
+        if (parentPath != "/" && dirPath.has_parent_path()) {  // 如果不是根目录的直接子目录
+            std::string rootSubPath = "/" + dirPath.filename().string();  // 构造根目录下的对应路径
+            if (fs::exists(rootSubPath) && is_hard_link(workPath, rootSubPath)) {
+                std::cout << "Skipping hardlink to root directory: " << workPath << " -> " << rootSubPath << std::endl;
                 return nullptr;
             }
         }
-        
+
         // 如果目录不存在，返回空节点
         if (!fs::exists(dirPath)) {
             return node;
