@@ -157,15 +157,27 @@ bool FZC::shouldSkipDirectory(const std::string& path) {
 std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int depth, bool rootOnly) {
     try {
         fs::path dirPath(path);
-        if (!fs::exists(dirPath) || isSymLink(path)) {
+        std::string workPath = dirPath.string();
+        
+        // 创建节点，初始大小为0
+        auto node = std::make_shared<FileNode>(workPath, workPath, 0, true);
+        
+        // 如果是符号链接，作为文件处理
+        if (isSymLink(path)) {
             return processFile(path);
         }
         
-        if (shouldSkipDirectory(path)) {
-            return nullptr;
+        // 如果目录不存在，返回空节点
+        if (!fs::exists(dirPath)) {
+            return node;
         }
         
-        std::string workPath = dirPath.string();
+        // 如果目录需要跳过，返回空节点
+        if (shouldSkipDirectory(path)) {
+            return node;
+        }
+        
+        // 检查是否已处理过
         {
             std::lock_guard<std::mutex> lock(m_pathMapMutex);
             if (m_processedPaths.find(workPath) != m_processedPaths.end()) {
@@ -179,17 +191,14 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             m_pathMap[workPath] = workPath;
         }
         
-        // Create node and get the directory entry size
-        auto node = std::make_shared<FileNode>(workPath, workPath, 0, true);
+        // 获取目录本身的大小
         try {
-            // Get the directory entry size using stat to get accurate size
             struct stat st;
             if (stat(workPath.c_str(), &st) == 0) {
                 node->size = st.st_size;
             }
         } catch (const std::exception&) {
-            // If we can't get the directory size, just use 0
-            node->size = 0;
+            // 保持 size 为 0
         }
         
         std::vector<fs::directory_entry> batch;
@@ -240,13 +249,14 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             }
         } catch (const std::exception& e) {
             std::cerr << "Error processing directory: " << e.what() << std::endl;
-            return nullptr;
+            return node;
         }
         
         return node;
     } catch (const std::exception& e) {
+        // 发生错误时返回空节点而不是 nullptr
         std::cerr << "Error processing directory: " << e.what() << std::endl;
-        return nullptr;
+        return std::make_shared<FileNode>(path, path, 0, true);
     }
 }
 
