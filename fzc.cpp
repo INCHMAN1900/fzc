@@ -59,12 +59,10 @@ std::unordered_set<std::string> FZC::getMountPoints() {
             // 排除系统盘
             if (strcmp(fs.f_mntonname, "/") != 0) {
                 // 检查是否是外部文件系统
-                if ((fs.f_flags & MNT_LOCAL) == 0 ||     // 网络挂载
-                    (fs.f_flags & MNT_REMOVABLE) ||      // 可移动设备
-                    strncmp(fs.f_fstypename, "hfs", 3) == 0 ||   // 外接 HFS+ 磁盘
-                    strncmp(fs.f_fstypename, "apfs", 4) == 0) {  // 外接 APFS 磁盘
+                if ((fs.f_flags & MNT_LOCAL) == 0 ||    // 非本地地盘
+                    (fs.f_flags & MNT_REMOVABLE)) {     // 外接磁盘
                     mountPoints.insert(mountPath);
-                    std::cout << "Mount point: " << mountPath << std::endl;
+                    std::cout << "Mount point: " << mountPath << ", removable:" << (fs.f_flags & MNT_REMOVABLE) << ", apfs:" << strncmp(fs.f_fstypename, "apfs", 4) << std::endl;
                 }
             }
         }
