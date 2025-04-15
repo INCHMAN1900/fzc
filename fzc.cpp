@@ -16,15 +16,6 @@ inline bool startsWith(const std::string& str, const std::string& prefix) {
            str.substr(0, prefix.length()) == prefix;
 }
 
-// Ignored paths.
-const std::vector<std::string> FZC::skipPaths = {
-    "/System/Volumes/Data",
-    "/System/Volumes/Preboot",
-    "/System/Volumes/VM",
-    "/System/Volumes/Update",
-    "/Volumes"  // 外接盘目录
-};
-
 /// Use bit mode to check if path is a symlink.
 bool FZC::isSymLink(const std::string& path) {
     struct stat st;
@@ -65,19 +56,15 @@ std::unordered_set<std::string> FZC::getMountPoints() {
             const auto& fs = mntbuf[i];
             std::string mountPath = fs.f_mntonname;
             
-            // 只关注 /Volumes 下的挂载点
-            if (startsWith(mountPath, "/Volumes/")) {
-                // 排除系统盘和系统相关挂载
-                if (strcmp(fs.f_mntonname, "/") != 0 && 
-                    strstr(fs.f_mntonname, "/System/Volumes") == nullptr) {
-                    
-                    // 检查是否是外部文件系统
-                    if ((fs.f_flags & MNT_LOCAL) == 0 ||     // 网络挂载
-                        (fs.f_flags & MNT_REMOVABLE) ||      // 可移动设备
-                        strncmp(fs.f_fstypename, "hfs", 3) == 0 ||   // 外接 HFS+ 磁盘
-                        strncmp(fs.f_fstypename, "apfs", 4) == 0) {  // 外接 APFS 磁盘
-                        mountPoints.insert(mountPath);
-                    }
+            // 排除系统盘
+            if (strcmp(fs.f_mntonname, "/") != 0) {
+                // 检查是否是外部文件系统
+                if ((fs.f_flags & MNT_LOCAL) == 0 ||     // 网络挂载
+                    (fs.f_flags & MNT_REMOVABLE) ||      // 可移动设备
+                    strncmp(fs.f_fstypename, "hfs", 3) == 0 ||   // 外接 HFS+ 磁盘
+                    strncmp(fs.f_fstypename, "apfs", 4) == 0) {  // 外接 APFS 磁盘
+                    mountPoints.insert(mountPath);
+                    std::cout << "Mount point: " << mountPath << std::endl;
                 }
             }
         }
@@ -135,33 +122,33 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
 }
 
 bool FZC::shouldSkipDirectory(const std::string& path) {
-    // 如果是系统相关路径，直接跳过
-    for (const auto& skipPath : skipPaths) {
-        if (startsWith(path, skipPath)) {
-            return true;
-        }
+    // 首次处理时保存入口路径
+    if (m_processedPaths.empty()) {
+        m_entryPath = path;
     }
     
-    // 如果路径是挂载点
+    // 如果是挂载点
     if (isMountPoint(path)) {
-        // 如果是入口路径（第一个处理的路径）
-        if (m_processedPaths.empty()) {
-            return false;  // 不跳过，允许处理这个挂载点
+        // 如果是入口路径，不跳过
+        if (path == m_entryPath) {
+            return false;
         }
-        // 如果不是入口路径，说明是内部遇到的其他挂载点，跳过
-        return true;
+        // 如果不是入口路径，而且当前路径在入口路径下，则跳过
+        if (startsWith(path, m_entryPath + "/")) {
+            return true;
+        }
+        // 其他情况不跳过
+        return false;
     }
     
     // 如果路径不是挂载点，但是其父目录中包含挂载点
     if (isSubPathOfMountPoint(path)) {
-        // 如果入口路径就是挂载点，允许继续处理
-        bool isEntryMountPoint = false;
-        if (!m_processedPaths.empty()) {
-            auto firstPath = *m_processedPaths.begin();
-            isEntryMountPoint = isMountPoint(firstPath);
+        // 如果在入口路径下，且入口路径是挂载点，则允许处理
+        if (startsWith(path, m_entryPath + "/") && isMountPoint(m_entryPath)) {
+            return false;
         }
-        // 如果入口是挂载点则继续处理，否则跳过
-        return !isEntryMountPoint;
+        // 其他情况跳过
+        return true;
     }
     
     return false;

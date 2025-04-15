@@ -96,7 +96,7 @@ private:
     bool isMountPoint(const std::string& path);
     bool isSubPathOfMountPoint(const std::string& path);
     std::unordered_set<std::string> m_mountPoints;
-    static const std::vector<std::string> skipPaths;
+    std::string m_entryPath;  // 保存入口路径
 };
 
 // C-style interface for Swift interoperability
