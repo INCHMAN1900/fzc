@@ -210,10 +210,8 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         
         // 获取目录本身的大小
         try {
-            struct stat st;
-            if (lstat(workPath.c_str(), &st) == 0) {
-                node->size = st.st_size;
-            }
+            auto [size, _] = getFileInfo(workPath);
+            node->size = size;
         } catch (const std::exception&) {
             // 保持 size 为 0
         }
@@ -437,5 +435,10 @@ extern "C" {
             delete static_cast<std::shared_ptr<FileNode>*>(node);
         }
     }
-        void releaseResult(FolderSizeResultPtr result) {        if (result) {            delete static_cast<FolderSizeResult*>(result);        }    }
+
+    void releaseResult(FolderSizeResultPtr result) {
+        if (result) {
+            delete static_cast<FolderSizeResult*>(result);
+        }
+    }
 }
