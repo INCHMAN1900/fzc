@@ -49,7 +49,7 @@ FZC::FZC(bool useParallelProcessing, int maxThreads)
 // 检查两个路径是否是同一个 inode（硬链接）
 bool is_hard_link(const std::string& path1, const std::string& path2) {
     struct stat st1, st2;
-    if (stat(path1.c_str(), &st1) != 0 || stat(path2.c_str(), &st2) != 0) {
+    if (lstat(path1.c_str(), &st1) != 0 || lstat(path2.c_str(), &st2) != 0) {
         perror("stat failed");
         return false;
     }
@@ -211,7 +211,7 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         // 获取目录本身的大小
         try {
             struct stat st;
-            if (stat(workPath.c_str(), &st) == 0) {
+            if (lstat(workPath.c_str(), &st) == 0) {
                 node->size = st.st_size;
             }
         } catch (const std::exception&) {
