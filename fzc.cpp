@@ -180,7 +180,6 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         if (parentPath != "/" && dirPath.has_parent_path()) {  // 如果不是根目录的直接子目录
             std::string rootSubPath = "/" + dirPath.filename().string();  // 构造根目录下的对应路径
             if (fs::exists(rootSubPath) && is_hard_link(workPath, rootSubPath)) {
-                std::cout << "Skipping hardlink to root directory: " << workPath << " -> " << rootSubPath << std::endl;
                 return nullptr;
             }
         }
