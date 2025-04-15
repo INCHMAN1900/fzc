@@ -46,6 +46,16 @@ FZC::FZC(bool useParallelProcessing, int maxThreads)
     m_mountPoints = getMountPoints();
 }
 
+// 检查两个路径是否是同一个 inode（硬链接）
+bool is_hard_link(const std::string& path1, const std::string& path2) {
+    struct stat st1, st2;
+    if (stat(path1.c_str(), &st1) != 0 || stat(path2.c_str(), &st2) != 0) {
+        perror("stat failed");
+        return false;
+    }
+    return (st1.st_ino == st2.st_ino); // 相同 inode 即为硬链接
+}
+
 std::unordered_set<std::string> FZC::getMountPoints() {
     std::unordered_set<std::string> mountPoints;
     struct statfs* mntbuf;
@@ -163,6 +173,14 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         // 如果是符号链接，作为文件处理
         if (isSymLink(path)) {
             return processFile(path);
+        }
+        
+        // 检查是否是指向根目录下文件的硬链接
+        if (m_entryPath != "/" && !workPath.empty()) {
+            std::string rootPath = "/" + fs::path(workPath).filename().string();
+            if (fs::exists(rootPath) && is_hard_link(workPath, rootPath)) {
+                return nullptr;
+            }
         }
         
         // 如果目录不存在，返回空节点
