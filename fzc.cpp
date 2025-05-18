@@ -99,7 +99,7 @@ bool FZC::isSubPathOfMountPoint(const std::string& path) {
     return false;
 }
 
-FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly) {
+FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly, bool includeDirectorySize) {
     // Start timing
     auto startTime = std::chrono::high_resolution_clock::now();
     
@@ -115,9 +115,9 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
             rootNode = processFile(path);
         } else if (fs::is_directory(fsPath)) {
             if (m_useParallelProcessing) {
-                rootNode = processDirectoryParallel(path, 0, rootOnly);
+                rootNode = processDirectoryParallel(path, 0, rootOnly, includeDirectorySize);
             } else {
-                rootNode = processDirectory(path, 0, rootOnly);
+                rootNode = processDirectory(path, 0, rootOnly, includeDirectorySize);
             }
         }
     } catch (const std::exception& e) {
@@ -169,44 +169,37 @@ bool FZC::hasAccessPermission(const std::string& path) {
     return access(path.c_str(), R_OK) == 0;
 }
 
-std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int depth, bool rootOnly) {
+std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int depth, bool rootOnly, bool includeDirectorySize) {
     try {
         fs::path dirPath(path);
         std::string workPath = dirPath.string();
         
-        // 创建节点，初始大小为0
         auto node = std::make_shared<FileNode>(workPath, workPath, 0, true);
         
-        // 检查访问权限
         if (!hasAccessPermission(workPath)) {
             return node;
         }
         
-        // 如果是符号链接，作为文件处理
         if (isSymLink(path)) {
             return processFile(path);
         }
         
-        // 检查当前路径是否为根目录下某个直接子目录的硬链接
         fs::path parentPath = dirPath.parent_path();
-        if (parentPath != "/" && dirPath.has_parent_path()) {  // 如果不是根目录的直接子目录
-            std::string rootSubPath = "/" + dirPath.filename().string();  // 构造根目录下的对应路径
+        if (parentPath != "/" && dirPath.has_parent_path()) {
+            std::string rootSubPath = "/" + dirPath.filename().string();
             if (fs::exists(rootSubPath) && is_hard_link(workPath, rootSubPath)) {
                 return nullptr;
             }
         }
 
-        // 如果目录不存在，返回空节点
         if (!fs::exists(dirPath)) {
             return node;
         }
         
-        // 如果目录需要跳过，返回空节点
         if (shouldSkipDirectory(path)) {
             return node;
         }
         
-        // 检查是否已处理过
         {
             std::lock_guard<std::mutex> lock(m_pathMapMutex);
             if (m_processedPaths.find(workPath) != m_processedPaths.end()) {
@@ -220,12 +213,14 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             m_pathMap[workPath] = workPath;
         }
         
-        // 获取目录本身的大小
-        try {
-            auto [size, _] = getFileInfo(workPath);
-            node->size = size;
-        } catch (const std::exception&) {
-            // 保持 size 为 0
+        // 仅在 includeDirectorySize == true 时获取并累加目录本身大小
+        if (includeDirectorySize) {
+            try {
+                auto [size, _] = getFileInfo(workPath);
+                node->size = size;
+            } catch (const std::exception&) {
+                // 保持 size 为 0
+            }
         }
         
         std::vector<fs::directory_entry> batch;
@@ -237,7 +232,7 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
                 try {
                     batch.push_back(entry);
                     if (batch.size() >= BATCH_SIZE) {
-                        processBatch(batch, node, depth, futures);
+                        processBatch(batch, node, depth, futures, includeDirectorySize);
                     }
                 } catch (const fs::filesystem_error&) {
                     continue;
@@ -245,10 +240,9 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             }
             
             if (!batch.empty()) {
-                processBatch(batch, node, depth, futures);
+                processBatch(batch, node, depth, futures, includeDirectorySize);
             }
             
-            // 等待所有任务完成
             for (auto& future : futures) {
                 try {
                     if (auto childNode = future.get()) {
@@ -260,17 +254,15 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             }
             
             if (!node->children.empty()) {
-                // Sort by size in descending order, then by path for stable ordering
                 std::sort(node->children.begin(), node->children.end(),
                           [](const auto& a, const auto& b) {
                               if (a->size != b->size) {
-                                  return a->size > b->size;  // Descending order by size
+                                  return a->size > b->size;
                               }
-                              return a->path < b->path;      // Ascending order by path if sizes are equal
+                              return a->path < b->path;
                           });
             }
             
-            // If rootOnly is true, clear children after calculating total size
             if (rootOnly) {
                 node->children.clear();
             }
@@ -279,16 +271,16 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
             return node;
         }
         
+        // 不再需要减去目录本身大小
         return node;
     } catch (const std::exception& e) {
-        // 发生错误时返回空节点而不是 nullptr
         std::cerr << "Error processing directory: " << e.what() << std::endl;
         return std::make_shared<FileNode>(path, path, 0, true);
     }
 }
 
-std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth, bool rootOnly) {
-    return processDirectory(path, depth, rootOnly);  // Use the same optimized implementation
+std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth, bool rootOnly, bool includeDirectorySize) {
+    return processDirectory(path, depth, rootOnly, includeDirectorySize);  // Use the same optimized implementation
 }
 
 uint64_t FZC::getFileSize(const std::string& path) {
@@ -305,7 +297,8 @@ void FZC::processBatch(
     std::vector<fs::directory_entry>& batch,
     std::shared_ptr<FileNode>& node,
     int depth,
-    std::vector<std::future<std::shared_ptr<FileNode>>>& futures) {
+    std::vector<std::future<std::shared_ptr<FileNode>>>& futures,
+    bool includeDirectorySize) {
     
     for (const auto& entry : batch) {
         try {
@@ -332,8 +325,8 @@ void FZC::processBatch(
                 if (m_activeThreads < m_maxThreads) {
                     m_activeThreads++;
                     futures.push_back(std::async(std::launch::async,
-                                                 [this, workPath, depth]() {
-                                                     auto result = processDirectory(workPath, depth + 1, false);
+                                                 [this, workPath, depth, includeDirectorySize]() {
+                                                     auto result = processDirectory(workPath, depth + 1, false, includeDirectorySize);
                                                      m_activeThreads--;
                                                      return result;
                                                  }));
@@ -342,7 +335,7 @@ void FZC::processBatch(
             }
             
             if (isDir) {
-                auto childNode = processDirectory(workPath, depth + 1, false);
+                auto childNode = processDirectory(workPath, depth + 1, false, includeDirectorySize);
                 if (childNode) {
                     node->size += childNode->size;
                     node->children.push_back(childNode);
@@ -381,11 +374,11 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
 
 // C-style interface implementation
 extern "C" {
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly) {
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize) {
         try {
             // Use default settings (parallel processing with auto thread count)
             FZC calculator(true, 0);
-            auto result = calculator.calculateFolderSizes(rootPath, rootOnly);
+            auto result = calculator.calculateFolderSizes(rootPath, rootOnly, includeDirectorySize);
             // Transfer ownership to C interface
             return static_cast<void*>(new FolderSizeResult(std::move(result)));
         } catch (const std::exception& e) {
@@ -394,10 +387,10 @@ extern "C" {
         }
     }
     
-    FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads, bool rootOnly) {
+    FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads, bool rootOnly, bool includeDirectorySize) {
         try {
             FZC calculator(useParallelProcessing, maxThreads);
-            auto result = calculator.calculateFolderSizes(rootPath, rootOnly);
+            auto result = calculator.calculateFolderSizes(rootPath, rootOnly, includeDirectorySize);
             // Transfer ownership to C interface
             return static_cast<void*>(new FolderSizeResult(std::move(result)));
         } catch (const std::exception& e) {

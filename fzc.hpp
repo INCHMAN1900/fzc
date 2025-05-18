@@ -47,7 +47,7 @@ public:
     FZC(bool useParallelProcessing = true, int maxThreads = 0);
     
     // Calculate sizes and return the root node with timing information
-    FolderSizeResult calculateFolderSizes(const std::string& path, bool rootOnly = false);
+    FolderSizeResult calculateFolderSizes(const std::string& path, bool rootOnly = false, bool includeDirectorySize = true);
     
 private:
     // Ensure temporary directory exists
@@ -57,10 +57,10 @@ private:
     std::shared_ptr<FileNode> processFile(const std::string& path);
     
     // Recursive function to process directories
-    std::shared_ptr<FileNode> processDirectory(const std::string& path, int depth = 0, bool rootOnly = false);
+    std::shared_ptr<FileNode> processDirectory(const std::string& path, int depth = 0, bool rootOnly = false, bool includeDirectorySize = true);
     
     // Parallel version of directory processing
-    std::shared_ptr<FileNode> processDirectoryParallel(const std::string& path, int depth = 0, bool rootOnly = false);
+    std::shared_ptr<FileNode> processDirectoryParallel(const std::string& path, int depth = 0, bool rootOnly = false, bool includeDirectorySize = true);
     
     // Helper function to get file size
     uint64_t getFileSize(const std::string& path);
@@ -69,7 +69,8 @@ private:
     void processBatch(std::vector<fs::directory_entry>& batch,
                      std::shared_ptr<FileNode>& node,
                      int depth,
-                     std::vector<std::future<std::shared_ptr<FileNode>>>& futures);
+                     std::vector<std::future<std::shared_ptr<FileNode>>>& futures,
+                     bool includeDirectorySize);
     
     // Configuration
     bool m_useParallelProcessing;
@@ -108,10 +109,10 @@ extern "C" {
     typedef void* FolderSizeResultPtr;
     
     // Function to calculate folder sizes and return the result
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly);
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize);
     
     // Function to calculate folder sizes with parallel processing options
-    FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads, bool rootOnly);
+    FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads, bool rootOnly, bool includeDirectorySize);
     
     // Functions to access node properties
     const char* getNodePath(FileNodePtr node);
