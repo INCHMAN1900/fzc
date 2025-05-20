@@ -404,9 +404,10 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
 uint64_t FZC::getFileSizeByFsType(const std::string& path) {
     struct stat st;
     if (lstat(path.c_str(), &st) != 0) return 0;
+    uint64_t sz = getAllocatedSize(path);
+    if (sz > 0) return sz;
     if (m_entryFsType == "apfs" || m_entryFsType == "hfs") {
-        uint64_t sz = getAllocatedSize(path);
-        if (sz > 0) return sz;
+        return sz;
     }
     return static_cast<uint64_t>(st.st_size);
 }
