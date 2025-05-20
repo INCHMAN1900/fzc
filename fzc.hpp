@@ -111,9 +111,6 @@ extern "C" {
     // Function to calculate folder sizes and return the result
     FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize);
     
-    // Function to calculate folder sizes with parallel processing options
-    FolderSizeResultPtr calculateFolderSizesParallel(const char* rootPath, bool useParallelProcessing, int maxThreads, bool rootOnly, bool includeDirectorySize);
-    
     // Functions to access node properties
     const char* getNodePath(FileNodePtr node);
     uint64_t getNodeSize(FileNodePtr node);
