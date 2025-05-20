@@ -48,10 +48,20 @@ bool FZC::isSymLink(const std::string& path) {
     if (lstat(path.c_str(), &st) != 0) {
         return false;
     }
-    return (st.st_mode & 0170000) == 0120000;
+    return (st.st_mode & S_IFMT) == S_IFLNK;
 }
 
+// 修改 getFileInfo 使 symlink 返回其自身大小
 std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0) {
+        return {0, false};
+    }
+    if ((st.st_mode & S_IFMT) == S_IFLNK) {
+        // symlink: size 为链接本身长度
+        std::cout << "[symlink size] " << path << " size=" << st.st_size << std::endl;
+        return {static_cast<uint64_t>(st.st_size), false};
+    }
     bool isDir = false;
     try {
         isDir = fs::is_directory(path);
