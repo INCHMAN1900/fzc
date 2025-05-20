@@ -11,6 +11,9 @@
 
 namespace fs = std::filesystem;
 
+// 声明 getAllocatedSize 的原型（放在合适的位置，通常在 namespace fs = std::filesystem; 之后）
+uint64_t getAllocatedSize(const std::string& path);
+
 // Helper function declarations
 inline bool startsWith(const std::string& str, const std::string& prefix) {
     return str.length() >= prefix.length() && 
@@ -27,11 +30,14 @@ bool FZC::isSymLink(const std::string& path) {
 }
 
 std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
-    struct stat st;
-    if (lstat(path.c_str(), &st) != 0) {
+    bool isDir = false;
+    try {
+        isDir = fs::is_directory(path);
+    } catch (...) {
         return {0, false};
     }
-    return {st.st_size, (st.st_mode & S_IFMT) == S_IFDIR};
+    uint64_t size = getAllocatedSize(path);
+    return {size, isDir};
 }
 
 // Constructor with parallelism configuration
@@ -214,14 +220,14 @@ std::shared_ptr<FileNode> FZC::processDirectory(const std::string& path, int dep
         }
         
         // 仅在 includeDirectorySize == true 时获取并累加目录本身大小
-        if (includeDirectorySize) {
-            try {
-                auto [size, _] = getFileInfo(workPath);
-                node->size = size;
-            } catch (const std::exception&) {
-                // 保持 size 为 0
-            }
-        }
+        // if (includeDirectorySize) {
+        //     try {
+        //         auto [size, _] = getFileInfo(workPath);
+        //         node->size = size;
+        //     } catch (const std::exception&) {
+        //         // 保持 size 为 0
+        //     }
+        // }
         
         std::vector<fs::directory_entry> batch;
         batch.reserve(BATCH_SIZE);
@@ -291,6 +297,27 @@ uint64_t FZC::getFileSize(const std::string& path) {
         // Silently return 0 for any errors
         return 0;
     }
+}
+
+uint64_t getAllocatedSize(const std::string& path) {
+    // 使用原始字节数组避免结构体填充问题
+    char buf[sizeof(uint32_t) + sizeof(uint64_t)] = {0};
+
+    struct attrlist attrList = {};
+    attrList.bitmapcount = ATTR_BIT_MAP_COUNT;
+    attrList.fileattr = ATTR_FILE_ALLOCSIZE;
+
+    // 设置 length 字段
+    *reinterpret_cast<uint32_t*>(buf) = sizeof(buf);
+
+    if (getattrlist(path.c_str(), &attrList, buf, sizeof(buf), 0) != 0) {
+        std::cerr << "getattrlist failed on " << path << ": " << strerror(errno) << "\n";
+        return 0;
+    }
+
+    // 读取 allocsize 字段（紧跟 length 之后）
+    uint64_t allocsize = *reinterpret_cast<uint64_t*>(buf + sizeof(uint32_t));
+    return allocsize;
 }
 
 void FZC::processBatch(
