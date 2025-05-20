@@ -34,6 +34,15 @@ inline bool startsWith(const std::string& str, const std::string& prefix) {
            str.substr(0, prefix.length()) == prefix;
 }
 
+// Add this function before FZC methods
+static std::string normalizePath(const std::string& path) {
+    std::string p = path;
+    std::replace(p.begin(), p.end(), '\\', '/');
+    // Remove trailing slashes except root
+    while (p.length() > 1 && p.back() == '/') p.pop_back();
+    return p;
+}
+
 bool FZC::isSymLink(const std::string& path) {
     struct stat st;
     if (lstat(path.c_str(), &st) != 0) {
@@ -58,6 +67,32 @@ FZC::FZC(bool useParallelProcessing, int maxThreads)
       m_maxDepthForParallelism(8) {
     if (m_maxThreads < 1) m_maxThreads = 1;
     m_mountPoints = getMountPoints();
+    // firmlink 映射表初始化
+    m_firmlinkMap = {
+        {"/AppleInternal", "AppleInternal"},
+        {"/Applications", "Applications"},
+        {"/Library", "Library"},
+        {"/System/Library/Caches", "System/Library/Caches"},
+        {"/System/Library/Assets", "System/Library/Assets"},
+        {"/System/Library/PreinstalledAssets", "System/Library/PreinstalledAssets"},
+        {"/System/Library/AssetsV2", "System/Library/AssetsV2"},
+        {"/System/Library/PreinstalledAssetsV2", "System/Library/PreinstalledAssetsV2"},
+        {"/System/Library/CoreServices/CoreTypes.bundle/Contents/Library", "System/Library/CoreTypes.bundle/Contents/Library"},
+        {"/System/Library/Speech", "System/Library/Speech"},
+        {"/Users", "Users"},
+        {"/Volumes", "Volumes"},
+        {"/cores", "cores"},
+        {"/opt", "opt"},
+        {"/private", "private"},
+        {"/usr/local", "usr/local"},
+        {"/usr/libexec/cups", "usr/libexec/cups"},
+        {"/usr/share/snmp", "usr/share/snmp"}
+    };
+    // 原始系统盘根路径，可根据实际情况扩展
+    m_dataRoots = {
+        "/System/Volumes/Data",
+        // 你可以在这里添加其它原始系统盘根路径，比如 "/Volumes/Macintosh HD"
+    };
 }
 
 bool is_hard_link(const std::string& path1, const std::string& path2) {
@@ -127,6 +162,7 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
 }
 
 bool FZC::shouldSkipDirectory(const std::string& path) {
+    if (isCoveredByFirmlink(path)) return true;
     if (m_processedPaths.empty()) {
         m_entryPath = path;
     }
@@ -279,6 +315,28 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
     } catch (const std::exception&) {
         return nullptr;
     }
+}
+
+bool FZC::isCoveredByFirmlink(const std::string& path) {
+    std::string normPath = normalizePath(path);
+    for (const auto& root : m_dataRoots) {
+        std::string normRoot = normalizePath(root);
+        if (normPath == normRoot || !startsWith(normPath, normRoot + "/")) continue;
+        // 取相对路径，带前导斜杠
+        std::string rel = normPath.substr(normRoot.length());
+        if (rel.empty()) rel = "/";
+        if (rel[0] != '/') rel = "/" + rel;
+        for (const auto& kv : m_firmlinkMap) {
+            std::string value = kv.second;
+            if (value.empty() || value[0] != '/') value = "/" + value;
+            // 完全匹配或子路径匹配
+            if (rel == value || startsWith(rel, value + "/")) {
+                std::cout << "[firmlink skip] " << path << std::endl;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // C-style interface implementation
