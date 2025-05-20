@@ -1,3 +1,21 @@
+/*
+ * fzc.cpp
+ * 
+ * Implementation of the FZC class for calculating folder and file sizes,
+ * supporting parallel traversal, mount point and firmlink skipping, and
+ * C-style interface for Swift interoperability.
+ * 
+ * Features:
+ * - Handles symlinks and hard links correctly.
+ * - Skips directories covered by firmlinks (Apple system volume layout).
+ * - Skips mount points and sub-mounts as needed.
+ * - Returns file/folder structure even if size calculation fails.
+ * - Provides thread-safe parallel traversal.
+ * 
+ * Author: INCHMAN1900
+ * Date: 2025-05-21
+ */
+
 #include "fzc.hpp"
 #include <filesystem>
 #include <iostream>
@@ -14,6 +32,7 @@
 
 namespace fs = std::filesystem;
 
+// Get the allocated size of a file or directory using getattrlist (macOS specific)
 uint64_t getAllocatedSize(const std::string& path) {
     char buf[sizeof(uint32_t) + sizeof(uint64_t)] = {0};
     struct attrlist attrList = {};
@@ -28,21 +47,21 @@ uint64_t getAllocatedSize(const std::string& path) {
     return allocsize;
 }
 
-// Helper function declarations
+// Helper: check if a string starts with a prefix
 inline bool startsWith(const std::string& str, const std::string& prefix) {
     return str.length() >= prefix.length() && 
            str.substr(0, prefix.length()) == prefix;
 }
 
-// Add this function before FZC methods
+// Helper: normalize path (replace backslashes, remove trailing slashes except root)
 static std::string normalizePath(const std::string& path) {
     std::string p = path;
     std::replace(p.begin(), p.end(), '\\', '/');
-    // Remove trailing slashes except root
     while (p.length() > 1 && p.back() == '/') p.pop_back();
     return p;
 }
 
+// Check if a path is a symbolic link
 bool FZC::isSymLink(const std::string& path) {
     struct stat st;
     if (lstat(path.c_str(), &st) != 0) {
@@ -51,15 +70,14 @@ bool FZC::isSymLink(const std::string& path) {
     return (st.st_mode & S_IFMT) == S_IFLNK;
 }
 
-// 修改 getFileInfo 使 symlink 返回其自身大小
+// Get file size and directory flag; for symlink, return its own size (not target)
 std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
     struct stat st;
     if (lstat(path.c_str(), &st) != 0) {
         return {0, false};
     }
     if ((st.st_mode & S_IFMT) == S_IFLNK) {
-        // symlink: size 为链接本身长度
-        std::cout << "[symlink size] " << path << " size=" << st.st_size << std::endl;
+        // For symlink, return the size of the link itself
         return {static_cast<uint64_t>(st.st_size), false};
     }
     bool isDir = false;
@@ -72,12 +90,13 @@ std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
     return {size, isDir};
 }
 
+// Constructor: initialize firmlink map, data roots, and mount points
 FZC::FZC(bool useParallelProcessing, int maxThreads)
     : m_maxThreads(maxThreads > 0 ? maxThreads : std::thread::hardware_concurrency()),
       m_maxDepthForParallelism(8) {
     if (m_maxThreads < 1) m_maxThreads = 1;
     m_mountPoints = getMountPoints();
-    // firmlink 映射表初始化
+    // Firmlink mapping: key = installed system path, value = original data path (relative)
     m_firmlinkMap = {
         {"/AppleInternal", "AppleInternal"},
         {"/Applications", "Applications"},
@@ -98,13 +117,14 @@ FZC::FZC(bool useParallelProcessing, int maxThreads)
         {"/usr/libexec/cups", "usr/libexec/cups"},
         {"/usr/share/snmp", "usr/share/snmp"}
     };
-    // 原始系统盘根路径，可根据实际情况扩展
+    // Data roots: all possible original system data mount points
     m_dataRoots = {
         "/System/Volumes/Data",
-        // 你可以在这里添加其它原始系统盘根路径，比如 "/Volumes/Macintosh HD"
+        // Add more data roots here if needed, e.g. "/Volumes/Macintosh HD"
     };
 }
 
+// Check if two paths are hard links to the same inode
 bool is_hard_link(const std::string& path1, const std::string& path2) {
     struct stat st1, st2;
     if (lstat(path1.c_str(), &st1) != 0 || lstat(path2.c_str(), &st2) != 0) {
@@ -114,6 +134,7 @@ bool is_hard_link(const std::string& path1, const std::string& path2) {
     return (st1.st_ino == st2.st_ino);
 }
 
+// Get all mount points on the system
 std::unordered_set<std::string> FZC::getMountPoints() {
     std::unordered_set<std::string> mountPoints;
     struct statfs* mntbuf;
@@ -134,10 +155,12 @@ std::unordered_set<std::string> FZC::getMountPoints() {
     return mountPoints;
 }
 
+// Check if a path is a mount point
 bool FZC::isMountPoint(const std::string& path) {
     return m_mountPoints.find(path) != m_mountPoints.end();
 }
 
+// Check if a path is a subpath of any mount point
 bool FZC::isSubPathOfMountPoint(const std::string& path) {
     if (path.empty()) return false;
     for (const auto& mount : m_mountPoints) {
@@ -150,6 +173,7 @@ bool FZC::isSubPathOfMountPoint(const std::string& path) {
     return false;
 }
 
+// Main entry: calculate folder sizes and timing
 FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly, bool includeDirectorySize) {
     auto startTime = std::chrono::high_resolution_clock::now();
     fs::path fsPath(path);
@@ -171,6 +195,7 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
     return FolderSizeResult(rootNode, elapsedTimeMs);
 }
 
+// Decide if a directory should be skipped (firmlink, mount point, etc.)
 bool FZC::shouldSkipDirectory(const std::string& path) {
     if (isCoveredByFirmlink(path)) return true;
     if (m_processedPaths.empty()) {
@@ -188,10 +213,12 @@ bool FZC::shouldSkipDirectory(const std::string& path) {
     return false;
 }
 
+// Check if the current process has read access to the path
 bool FZC::hasAccessPermission(const std::string& path) {
     return access(path.c_str(), R_OK) == 0;
 }
 
+// Recursively process a directory in parallel, collecting size and children
 std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth, bool rootOnly, bool includeDirectorySize) {
     try {
         fs::path dirPath(path);
@@ -259,6 +286,7 @@ std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path,
     }
 }
 
+// Process a batch of directory entries, possibly in parallel
 void FZC::processBatch(
     std::vector<fs::directory_entry>& batch,
     std::shared_ptr<FileNode>& node,
@@ -312,12 +340,12 @@ void FZC::processBatch(
     batch.clear();
 }
 
+// Process a single file or symlink; always returns a node for structure
 std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
     try {
         auto [size, isDir] = getFileInfo(path);
-        // ...existing code...
         if (size == 0 && !isDir) {
-            // 返回节点，size=0，isDir=false，保证结构可见
+            // Return node with size=0 for error or unreadable file, to keep structure
             std::string workPath = fs::path(path).string();
             {
                 std::lock_guard<std::mutex> lock(m_pathMapMutex);
@@ -332,7 +360,7 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
         }
         return std::make_shared<FileNode>(workPath, workPath, size, isDir);
     } catch (const std::exception&) {
-        // 返回节点，size=0，isDir=false，保证结构可见
+        // Return node with size=0 for error, to keep structure
         std::string workPath = fs::path(path).string();
         {
             std::lock_guard<std::mutex> lock(m_pathMapMutex);
@@ -342,21 +370,22 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
     }
 }
 
+// Check if a path is covered by a firmlink (skip if so)
 bool FZC::isCoveredByFirmlink(const std::string& path) {
     std::string normPath = normalizePath(path);
     for (const auto& root : m_dataRoots) {
         std::string normRoot = normalizePath(root);
         if (normPath == normRoot || !startsWith(normPath, normRoot + "/")) continue;
-        // 取相对路径，带前导斜杠
+        // Get relative path with leading slash
         std::string rel = normPath.substr(normRoot.length());
         if (rel.empty()) rel = "/";
         if (rel[0] != '/') rel = "/" + rel;
         for (const auto& kv : m_firmlinkMap) {
             std::string value = kv.second;
             if (value.empty() || value[0] != '/') value = "/" + value;
-            // 完全匹配或子路径匹配
             if (rel == value || startsWith(rel, value + "/")) {
-                std::cout << "[firmlink skip] " << path << std::endl;
+                // Only log firmlink skip for debugging
+                // std::cout << "[firmlink skip] " << path << std::endl;
                 return true;
             }
         }
@@ -364,7 +393,7 @@ bool FZC::isCoveredByFirmlink(const std::string& path) {
     return false;
 }
 
-// C-style interface implementation
+// C-style interface for Swift or other language interoperability
 extern "C" {
     FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize) {
         try {
