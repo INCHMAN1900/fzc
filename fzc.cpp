@@ -315,7 +315,16 @@ void FZC::processBatch(
 std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
     try {
         auto [size, isDir] = getFileInfo(path);
-        if (size == 0 && !isDir) return nullptr;
+        // ...existing code...
+        if (size == 0 && !isDir) {
+            // 返回节点，size=0，isDir=false，保证结构可见
+            std::string workPath = fs::path(path).string();
+            {
+                std::lock_guard<std::mutex> lock(m_pathMapMutex);
+                m_pathMap[workPath] = workPath;
+            }
+            return std::make_shared<FileNode>(workPath, workPath, 0, false);
+        }
         std::string workPath = fs::path(path).string();
         {
             std::lock_guard<std::mutex> lock(m_pathMapMutex);
@@ -323,7 +332,13 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
         }
         return std::make_shared<FileNode>(workPath, workPath, size, isDir);
     } catch (const std::exception&) {
-        return nullptr;
+        // 返回节点，size=0，isDir=false，保证结构可见
+        std::string workPath = fs::path(path).string();
+        {
+            std::lock_guard<std::mutex> lock(m_pathMapMutex);
+            m_pathMap[workPath] = workPath;
+        }
+        return std::make_shared<FileNode>(workPath, workPath, 0, false);
     }
 }
 
