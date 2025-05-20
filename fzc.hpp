@@ -103,6 +103,9 @@ private:
     std::unordered_map<std::string, std::string> m_firmlinkMap; // key: installed system path, value: original system path
     std::vector<std::string> m_dataRoots; // 原始系统盘根路径
     bool isCoveredByFirmlink(const std::string& path);
+
+    std::string m_entryFsType;
+    uint64_t getFileSizeByFsType(const std::string& path);
 };
 
 // C-style interface for Swift interoperability

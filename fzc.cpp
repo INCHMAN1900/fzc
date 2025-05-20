@@ -61,6 +61,24 @@ static std::string normalizePath(const std::string& path) {
     return p;
 }
 
+// Helper: get filesystem type for a given path (returns e.g. "apfs", "hfs", "exfat", etc.)
+static std::string getFsType(const std::string& path) {
+    struct statfs sfs;
+    if (statfs(path.c_str(), &sfs) == 0) {
+        return std::string(sfs.f_fstypename);
+    }
+    return "";
+}
+
+// Helper: get device id for a path
+static dev_t getDeviceId(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        return st.st_dev;
+    }
+    return 0;
+}
+
 // Check if a path is a symbolic link
 bool FZC::isSymLink(const std::string& path) {
     struct stat st;
@@ -86,7 +104,7 @@ std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
     } catch (...) {
         return {0, false};
     }
-    uint64_t size = getAllocatedSize(path);
+    uint64_t size = getFileSizeByFsType(path);
     return {size, isDir};
 }
 
@@ -175,6 +193,7 @@ bool FZC::isSubPathOfMountPoint(const std::string& path) {
 
 // Main entry: calculate folder sizes and timing
 FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly, bool includeDirectorySize) {
+    m_entryFsType = getFsType(path);
     auto startTime = std::chrono::high_resolution_clock::now();
     fs::path fsPath(path);
     std::shared_ptr<FileNode> rootNode;
@@ -201,12 +220,19 @@ bool FZC::shouldSkipDirectory(const std::string& path) {
     if (m_processedPaths.empty()) {
         m_entryPath = path;
     }
+    // More accurate mount point subpath skip logic
     if (isMountPoint(path)) {
         if (path == m_entryPath) return false;
         if (startsWith(path, m_entryPath + "/")) return true;
         return false;
     }
     if (isSubPathOfMountPoint(path)) {
+        // Compare device id: if same device as entry, do not skip
+        dev_t entryDev = getDeviceId(m_entryPath);
+        dev_t pathDev = getDeviceId(path);
+        if (entryDev != 0 && pathDev != 0 && entryDev == pathDev) {
+            return false;
+        }
         if (startsWith(path, m_entryPath + "/") && isMountPoint(m_entryPath)) return false;
         return true;
     }
@@ -215,7 +241,11 @@ bool FZC::shouldSkipDirectory(const std::string& path) {
 
 // Check if the current process has read access to the path
 bool FZC::hasAccessPermission(const std::string& path) {
-    return access(path.c_str(), R_OK) == 0;
+    int ret = access(path.c_str(), R_OK);
+    if (ret != 0) {
+        std::cerr << "[access error] " << path << " : " << strerror(errno) << std::endl;
+    }
+    return ret == 0;
 }
 
 // Recursively process a directory in parallel, collecting size and children
@@ -368,6 +398,17 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
         }
         return std::make_shared<FileNode>(workPath, workPath, 0, false);
     }
+}
+
+// Helper: get allocated size or fallback to st_size if not APFS/HFS
+uint64_t FZC::getFileSizeByFsType(const std::string& path) {
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0) return 0;
+    if (m_entryFsType == "apfs" || m_entryFsType == "hfs") {
+        uint64_t sz = getAllocatedSize(path);
+        if (sz > 0) return sz;
+    }
+    return static_cast<uint64_t>(st.st_size);
 }
 
 // Check if a path is covered by a firmlink (skip if so)
