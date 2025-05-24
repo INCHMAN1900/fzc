@@ -43,8 +43,8 @@ struct FolderSizeResult {
 // Main class for calculating folder sizes
 class FZC {
 public:
-    // Constructor with configurable parallelism
-    FZC(bool useParallelProcessing = true, int maxThreads = 0);
+    // Constructor with configurable parallelism and allocated size option
+    FZC(bool useParallelProcessing = true, int maxThreads = 0, bool useAllocatedSize = true);
     
     // Calculate sizes and return the root node with timing information
     FolderSizeResult calculateFolderSizes(const std::string& path, bool rootOnly = false, bool includeDirectorySize = true);
@@ -76,6 +76,7 @@ private:
     bool m_useParallelProcessing;
     int m_maxThreads;
     int m_maxDepthForParallelism;
+    bool m_useAllocatedSize;
     static constexpr size_t BATCH_SIZE = 64;
     
     // Thread management
@@ -115,7 +116,7 @@ extern "C" {
     typedef void* FolderSizeResultPtr;
     
     // Function to calculate folder sizes and return the result
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize);
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize, bool useAllocatedSize);
     
     // Functions to access node properties
     const char* getNodePath(FileNodePtr node);

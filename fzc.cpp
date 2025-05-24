@@ -109,9 +109,10 @@ std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
 }
 
 // Constructor: initialize firmlink map, data roots, and mount points
-FZC::FZC(bool useParallelProcessing, int maxThreads)
+FZC::FZC(bool useParallelProcessing, int maxThreads, bool useAllocatedSize)
     : m_maxThreads(maxThreads > 0 ? maxThreads : std::thread::hardware_concurrency()),
-      m_maxDepthForParallelism(8) {
+      m_maxDepthForParallelism(8),
+      m_useAllocatedSize(useAllocatedSize) {
     if (m_maxThreads < 1) m_maxThreads = 1;
     m_mountPoints = getMountPoints();
     // Firmlink mapping: key = installed system path, value = original data path (relative)
@@ -404,10 +405,12 @@ std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
 uint64_t FZC::getFileSizeByFsType(const std::string& path) {
     struct stat st;
     if (lstat(path.c_str(), &st) != 0) return 0;
-    uint64_t sz = getAllocatedSize(path);
-    if (sz > 0) return sz;
-    if (m_entryFsType == "apfs" || m_entryFsType == "hfs") {
-        return sz;
+    if (m_useAllocatedSize) {
+        uint64_t sz = getAllocatedSize(path);
+        if (sz > 0) return sz;
+        if (m_entryFsType == "apfs" || m_entryFsType == "hfs") {
+            return sz;
+        }
     }
     return static_cast<uint64_t>(st.st_size);
 }
@@ -437,9 +440,9 @@ bool FZC::isCoveredByFirmlink(const std::string& path) {
 
 // C-style interface for Swift or other language interoperability
 extern "C" {
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize) {
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize, bool useAllocatedSize) {
         try {
-            FZC calculator(true, 0);
+            FZC calculator(true, 0, useAllocatedSize);
             auto result = calculator.calculateFolderSizes(rootPath, rootOnly, includeDirectorySize);
             return static_cast<void*>(new FolderSizeResult(std::move(result)));
         } catch (const std::exception& e) {

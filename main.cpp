@@ -129,7 +129,7 @@ int main(int argc, char* argv[]) {
     }
     
     // Create calculator with specified settings
-    FZC calculator(useParallelProcessing, maxThreads);
+    FZC calculator(useParallelProcessing, maxThreads, false);
     
     // Calculate sizes
     auto result = calculator.calculateFolderSizes(directoryPath, rootOnly);
