@@ -109,10 +109,11 @@ std::pair<uint64_t, bool> FZC::getFileInfo(const std::string& path) {
 }
 
 // Constructor: initialize firmlink map, data roots, and mount points
-FZC::FZC(bool useParallelProcessing, int maxThreads, bool useAllocatedSize)
+FZC::FZC(bool useParallelProcessing, int maxThreads, bool useAllocatedSize, bool includeDirectorySize)
     : m_maxThreads(maxThreads > 0 ? maxThreads : std::thread::hardware_concurrency()),
       m_maxDepthForParallelism(8),
-      m_useAllocatedSize(useAllocatedSize) {
+      m_useAllocatedSize(useAllocatedSize),
+      m_includeDirectorySize(includeDirectorySize) {
     if (m_maxThreads < 1) m_maxThreads = 1;
     m_mountPoints = getMountPoints();
     // Firmlink mapping: key = installed system path, value = original data path (relative)
@@ -193,7 +194,7 @@ bool FZC::isSubPathOfMountPoint(const std::string& path) {
 }
 
 // Main entry: calculate folder sizes and timing
-FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly, bool includeDirectorySize) {
+FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly) {
     m_entryFsType = getFsType(path);
     auto startTime = std::chrono::high_resolution_clock::now();
     fs::path fsPath(path);
@@ -204,7 +205,7 @@ FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnl
         } else if (fs::is_regular_file(fsPath)) {
             rootNode = processFile(path);
         } else if (fs::is_directory(fsPath)) {
-            rootNode = processDirectoryParallel(path, 0, rootOnly, includeDirectorySize);
+            rootNode = processDirectoryParallel(path, 0, rootOnly);
         }
     } catch (const std::exception& e) {
         std::cerr << "Error processing path: " << e.what() << std::endl;
@@ -250,11 +251,15 @@ bool FZC::hasAccessPermission(const std::string& path) {
 }
 
 // Recursively process a directory in parallel, collecting size and children
-std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth, bool rootOnly, bool includeDirectorySize) {
+std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth, bool rootOnly) {
     try {
         fs::path dirPath(path);
         std::string workPath = dirPath.string();
-        auto node = std::make_shared<FileNode>(workPath, workPath, 0, true);
+        uint64_t dirSize = 0;
+        if (m_includeDirectorySize) {
+            dirSize = getFileSizeByFsType(workPath);
+        }
+        auto node = std::make_shared<FileNode>(workPath, workPath, dirSize, true);
         if (!hasAccessPermission(workPath)) return node;
         if (isSymLink(path)) return processFile(path);
         fs::path parentPath = dirPath.parent_path();
@@ -281,14 +286,14 @@ std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path,
                 try {
                     batch.push_back(entry);
                     if (batch.size() >= BATCH_SIZE) {
-                        processBatch(batch, node, depth, futures, includeDirectorySize);
+                        processBatch(batch, node, depth, futures);
                     }
                 } catch (const fs::filesystem_error&) {
                     continue;
                 }
             }
             if (!batch.empty()) {
-                processBatch(batch, node, depth, futures, includeDirectorySize);
+                processBatch(batch, node, depth, futures);
             }
             for (auto& future : futures) {
                 try {
@@ -322,8 +327,7 @@ void FZC::processBatch(
     std::vector<fs::directory_entry>& batch,
     std::shared_ptr<FileNode>& node,
     int depth,
-    std::vector<std::future<std::shared_ptr<FileNode>>>& futures,
-    bool includeDirectorySize) {
+    std::vector<std::future<std::shared_ptr<FileNode>>>& futures) {
     for (const auto& entry : batch) {
         try {
             std::string workPath = entry.path().string();
@@ -345,8 +349,8 @@ void FZC::processBatch(
                 if (m_activeThreads < m_maxThreads) {
                     m_activeThreads++;
                     futures.push_back(std::async(std::launch::async,
-                                                 [this, workPath, depth, includeDirectorySize]() {
-                                                     auto result = processDirectoryParallel(workPath, depth + 1, false, includeDirectorySize);
+                                                 [this, workPath, depth]() {
+                                                     auto result = processDirectoryParallel(workPath, depth + 1, false);
                                                      m_activeThreads--;
                                                      return result;
                                                  }));
@@ -354,7 +358,7 @@ void FZC::processBatch(
                 }
             }
             if (isDir) {
-                auto childNode = processDirectoryParallel(workPath, depth + 1, false, includeDirectorySize);
+                auto childNode = processDirectoryParallel(workPath, depth + 1, false);
                 if (childNode) {
                     node->size += childNode->size;
                     node->children.push_back(childNode);
@@ -440,10 +444,10 @@ bool FZC::isCoveredByFirmlink(const std::string& path) {
 
 // C-style interface for Swift or other language interoperability
 extern "C" {
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool includeDirectorySize, bool useAllocatedSize) {
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool useAllocatedSize, bool includeDirectorySize) {
         try {
-            FZC calculator(true, 0, useAllocatedSize);
-            auto result = calculator.calculateFolderSizes(rootPath, rootOnly, includeDirectorySize);
+            FZC calculator(true, 0, useAllocatedSize, includeDirectorySize);
+            auto result = calculator.calculateFolderSizes(rootPath, rootOnly);
             return static_cast<void*>(new FolderSizeResult(std::move(result)));
         } catch (const std::exception& e) {
             std::cerr << "Error calculating folder sizes: " << e.what() << std::endl;

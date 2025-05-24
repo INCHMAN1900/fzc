@@ -72,6 +72,8 @@ int main(int argc, char* argv[]) {
     bool useParallelProcessing = true;
     int maxThreads = 0;
     bool timeOnly = false;
+    bool useAllocatedSize = true;
+    bool includeDirectorySize = true;
     bool rootOnly = false;
     
     for (int i = 1; i < argc; ++i) {
@@ -107,6 +109,12 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         }
+        else if (arg.find("--allocated-size=") == 0) {
+            useAllocatedSize = (arg.substr(17) != "0");
+        }
+        else if (arg.find("--include-directory-size=") == 0) {
+            includeDirectorySize = (arg.substr(26) != "0");
+        }
         else if (arg[0] == '-') {
             std::cerr << "Unknown option: " << arg << "\n";
             printUsage();
@@ -129,7 +137,7 @@ int main(int argc, char* argv[]) {
     }
     
     // Create calculator with specified settings
-    FZC calculator(useParallelProcessing, maxThreads, false);
+    FZC calculator(useParallelProcessing, maxThreads, useAllocatedSize, includeDirectorySize);
     
     // Calculate sizes
     auto result = calculator.calculateFolderSizes(directoryPath, rootOnly);
@@ -144,4 +152,4 @@ int main(int argc, char* argv[]) {
     std::cout << "Time taken: " << result.elapsedTimeMs << " ms\n";
     
     return 0;
-} 
+}
