@@ -446,8 +446,21 @@ bool FZC::isCoveredByFirmlink(const std::string& path) {
 extern "C" {
     FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool useAllocatedSize, bool includeDirectorySize) {
         try {
+            // Check if path exists
+            if (!rootPath || !fs::exists(rootPath)) {
+                std::cerr << "Error: path does not exist: " << (rootPath ? rootPath : "null") << std::endl;
+                return nullptr;
+            }
+            
             FZC calculator(true, 0, useAllocatedSize, includeDirectorySize);
             auto result = calculator.calculateFolderSizes(rootPath, rootOnly);
+            
+            // Check if we got valid result
+            if (!result.rootNode) {
+                std::cerr << "Error: failed to calculate size for: " << rootPath << std::endl;
+                return nullptr;
+            }
+            
             return static_cast<void*>(new FolderSizeResult(std::move(result)));
         } catch (const std::exception& e) {
             std::cerr << "Error calculating folder sizes: " << e.what() << std::endl;
