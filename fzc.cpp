@@ -194,18 +194,28 @@ bool FZC::isSubPathOfMountPoint(const std::string& path) {
 }
 
 // Main entry: calculate folder sizes and timing
-FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly) {
+FolderSizeResult FZC::calculateFolderSizes(const std::string& path, bool rootOnly, CancellationToken* cancellationToken) {
+    // Check for cancellation before starting
+    if (cancellationToken && cancellationToken->isCancelled()) {
+        return FolderSizeResult(nullptr, 0.0);
+    }
+    
     m_entryFsType = getFsType(path);
     auto startTime = std::chrono::high_resolution_clock::now();
     fs::path fsPath(path);
     std::shared_ptr<FileNode> rootNode;
     try {
         if (isSymLink(path)) {
-            rootNode = processFile(path);
+            rootNode = processFile(path, cancellationToken);
         } else if (fs::is_regular_file(fsPath)) {
-            rootNode = processFile(path);
+            rootNode = processFile(path, cancellationToken);
         } else if (fs::is_directory(fsPath)) {
-            rootNode = processDirectoryParallel(path, 0, rootOnly);
+            rootNode = processDirectoryParallel(path, 0, rootOnly, cancellationToken);
+        }
+        
+        // Check for cancellation after processing
+        if (cancellationToken && cancellationToken->isCancelled()) {
+            return FolderSizeResult(nullptr, 0.0);
         }
     } catch (const std::exception& e) {
         std::cerr << "Error processing path: " << e.what() << std::endl;
@@ -251,7 +261,12 @@ bool FZC::hasAccessPermission(const std::string& path) {
 }
 
 // Recursively process a directory in parallel, collecting size and children
-std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth, bool rootOnly) {
+std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path, int depth, bool rootOnly, CancellationToken* cancellationToken) {
+    // Check for cancellation at the beginning
+    if (cancellationToken && cancellationToken->isCancelled()) {
+        return nullptr;
+    }
+    
     try {
         fs::path dirPath(path);
         std::string workPath = dirPath.string();
@@ -261,7 +276,8 @@ std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path,
         }
         auto node = std::make_shared<FileNode>(workPath, workPath, dirSize, true);
         if (!hasAccessPermission(workPath)) return node;
-        if (isSymLink(path)) return processFile(path);
+        if (isSymLink(path)) return processFile(path, cancellationToken);
+        
         fs::path parentPath = dirPath.parent_path();
         if (parentPath != "/" && dirPath.has_parent_path()) {
             std::string rootSubPath = "/" + dirPath.filename().string();
@@ -283,19 +299,37 @@ std::shared_ptr<FileNode> FZC::processDirectoryParallel(const std::string& path,
         std::vector<std::future<std::shared_ptr<FileNode>>> futures;
         try {
             for (const auto& entry : fs::directory_iterator(dirPath, fs::directory_options::skip_permission_denied)) {
+                // Check for cancellation during iteration
+                if (cancellationToken && cancellationToken->isCancelled()) {
+                    return nullptr;
+                }
+                
                 try {
                     batch.push_back(entry);
                     if (batch.size() >= BATCH_SIZE) {
-                        processBatch(batch, node, depth, futures);
+                        processBatch(batch, node, depth, futures, cancellationToken);
+                        // Check for cancellation after batch processing
+                        if (cancellationToken && cancellationToken->isCancelled()) {
+                            return nullptr;
+                        }
                     }
                 } catch (const fs::filesystem_error&) {
                     continue;
                 }
             }
             if (!batch.empty()) {
-                processBatch(batch, node, depth, futures);
+                processBatch(batch, node, depth, futures, cancellationToken);
+                // Check for cancellation after final batch
+                if (cancellationToken && cancellationToken->isCancelled()) {
+                    return nullptr;
+                }
             }
             for (auto& future : futures) {
+                // Check for cancellation before waiting for futures
+                if (cancellationToken && cancellationToken->isCancelled()) {
+                    return nullptr;
+                }
+                
                 try {
                     if (auto childNode = future.get()) {
                         node->size += childNode->size;
@@ -327,8 +361,14 @@ void FZC::processBatch(
     std::vector<fs::directory_entry>& batch,
     std::shared_ptr<FileNode>& node,
     int depth,
-    std::vector<std::future<std::shared_ptr<FileNode>>>& futures) {
+    std::vector<std::future<std::shared_ptr<FileNode>>>& futures,
+    CancellationToken* cancellationToken) {
     for (const auto& entry : batch) {
+        // Check for cancellation during batch processing
+        if (cancellationToken && cancellationToken->isCancelled()) {
+            break;
+        }
+        
         try {
             std::string workPath = entry.path().string();
             if (!hasAccessPermission(workPath)) {
@@ -349,8 +389,8 @@ void FZC::processBatch(
                 if (m_activeThreads < m_maxThreads) {
                     m_activeThreads++;
                     futures.push_back(std::async(std::launch::async,
-                                                 [this, workPath, depth]() {
-                                                     auto result = processDirectoryParallel(workPath, depth + 1, false);
+                                                 [this, workPath, depth, cancellationToken]() {
+                                                     auto result = processDirectoryParallel(workPath, depth + 1, false, cancellationToken);
                                                      m_activeThreads--;
                                                      return result;
                                                  }));
@@ -358,7 +398,7 @@ void FZC::processBatch(
                 }
             }
             if (isDir) {
-                auto childNode = processDirectoryParallel(workPath, depth + 1, false);
+                auto childNode = processDirectoryParallel(workPath, depth + 1, false, cancellationToken);
                 if (childNode) {
                     node->size += childNode->size;
                     node->children.push_back(childNode);
@@ -376,7 +416,12 @@ void FZC::processBatch(
 }
 
 // Process a single file or symlink; always returns a node for structure
-std::shared_ptr<FileNode> FZC::processFile(const std::string& path) {
+std::shared_ptr<FileNode> FZC::processFile(const std::string& path, CancellationToken* cancellationToken) {
+    // Check for cancellation
+    if (cancellationToken && cancellationToken->isCancelled()) {
+        return nullptr;
+    }
+    
     try {
         auto [size, isDir] = getFileInfo(path);
         if (size == 0 && !isDir) {
@@ -444,7 +489,7 @@ bool FZC::isCoveredByFirmlink(const std::string& path) {
 
 // C-style interface for Swift or other language interoperability
 extern "C" {
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool useAllocatedSize, bool includeDirectorySize) {
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool useAllocatedSize, bool includeDirectorySize, void* cancellationToken) {
         try {
             // Check if path exists
             if (!rootPath || !fs::exists(rootPath)) {
@@ -452,12 +497,13 @@ extern "C" {
                 return nullptr;
             }
             
-            FZC calculator(true, 0, useAllocatedSize, includeDirectorySize);
-            auto result = calculator.calculateFolderSizes(rootPath, rootOnly);
+            CancellationToken* token = static_cast<CancellationToken*>(cancellationToken);
             
-            // Check if we got valid result
+            FZC calculator(true, 0, useAllocatedSize, includeDirectorySize);
+            auto result = calculator.calculateFolderSizes(rootPath, rootOnly, token);
+            
+            // Check if we got valid result (could be null due to cancellation)
             if (!result.rootNode) {
-                std::cerr << "Error: failed to calculate size for: " << rootPath << std::endl;
                 return nullptr;
             }
             
@@ -467,6 +513,31 @@ extern "C" {
             return nullptr;
         }
     }
+    
+    // Functions for cancellation token management
+    void* createCancellationToken() {
+        return static_cast<void*>(new CancellationToken());
+    }
+    
+    void cancelToken(void* token) {
+        if (token) {
+            static_cast<CancellationToken*>(token)->cancel();
+        }
+    }
+    
+    bool isTokenCancelled(void* token) {
+        if (token) {
+            return static_cast<CancellationToken*>(token)->isCancelled();
+        }
+        return false;
+    }
+    
+    void releaseCancellationToken(void* token) {
+        if (token) {
+            delete static_cast<CancellationToken*>(token);
+        }
+    }
+    
     FileNodePtr getResultRootNode(FolderSizeResultPtr result) {
         if (!result) return nullptr;
         auto folderResult = static_cast<FolderSizeResult*>(result);

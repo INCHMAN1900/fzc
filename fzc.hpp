@@ -40,6 +40,16 @@ struct FolderSizeResult {
         : rootNode(node), elapsedTimeMs(timeMs) {}
 };
 
+// Cancellation token for stopping calculations
+class CancellationToken {
+private:
+    std::atomic<bool> m_cancelled{false};
+    
+public:
+    bool isCancelled() const { return m_cancelled.load(); }
+    void cancel() { m_cancelled.store(true); }
+};
+
 // Main class for calculating folder sizes
 class FZC {
 public:
@@ -47,29 +57,28 @@ public:
     FZC(bool useParallelProcessing = true, int maxThreads = 0, bool useAllocatedSize = true, bool includeDirectorySize = true);
 
     // Calculate sizes and return the root node with timing information
-    FolderSizeResult calculateFolderSizes(const std::string& path, bool rootOnly = false);
+    FolderSizeResult calculateFolderSizes(const std::string& path, bool rootOnly = false, CancellationToken* cancellationToken = nullptr);
 
 private:
     // Ensure temporary directory exists
     static void ensureTempDirExists();
     
     // Process a single file
-    std::shared_ptr<FileNode> processFile(const std::string& path);
-    
-    // Recursive function to process directories
-    std::shared_ptr<FileNode> processDirectory(const std::string& path, int depth = 0, bool rootOnly = false);
+    std::shared_ptr<FileNode> processFile(const std::string& path, CancellationToken* cancellationToken = nullptr);
     
     // Parallel version of directory processing
-    std::shared_ptr<FileNode> processDirectoryParallel(const std::string& path, int depth = 0, bool rootOnly = false);
+    std::shared_ptr<FileNode> processDirectoryParallel(const std::string& path, int depth, bool rootOnly, CancellationToken* cancellationToken = nullptr);
     
     // Helper function to get file size
     uint64_t getFileSize(const std::string& path);
     
     // Helper function to process a batch of entries
-    void processBatch(std::vector<fs::directory_entry>& batch,
-                     std::shared_ptr<FileNode>& node,
-                     int depth,
-                     std::vector<std::future<std::shared_ptr<FileNode>>>& futures);
+    void processBatch(
+        std::vector<fs::directory_entry>& batch,
+        std::shared_ptr<FileNode>& node,
+        int depth,
+        std::vector<std::future<std::shared_ptr<FileNode>>>& futures,
+        CancellationToken* cancellationToken = nullptr);
 
     // Configuration
     bool m_useParallelProcessing;
@@ -116,7 +125,13 @@ extern "C" {
     typedef void* FolderSizeResultPtr;
     
     // Function to calculate folder sizes and return the result
-    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool useAllocatedSize, bool includeDirectorySize);
+    FolderSizeResultPtr calculateFolderSizes(const char* rootPath, bool rootOnly, bool useAllocatedSize, bool includeDirectorySize, void* cancellationToken);
+    
+    // Functions for cancellation token management
+    void* createCancellationToken();
+    void cancelToken(void* token);
+    bool isTokenCancelled(void* token);
+    void releaseCancellationToken(void* token);
     
     // Functions to access node properties
     const char* getNodePath(FileNodePtr node);
