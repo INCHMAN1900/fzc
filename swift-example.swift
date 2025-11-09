@@ -3,6 +3,7 @@ import Foundation
 // Public type aliases for opaque pointers to make them accessible to internal methods
 public typealias FileNodePtr = UnsafeMutableRawPointer
 public typealias FolderSizeResultPtr = UnsafeMutableRawPointer
+public typealias CancellationTokenPtr = UnsafeMutableRawPointer
     
 // Load the library dynamically
 private func loadLibrary(_ libraryName: String) -> UnsafeMutableRawPointer? {
@@ -37,9 +38,24 @@ private let FZCLibraryHandle = loadLibrary("fzc")
 
 private class FZCLoader {
     // Renamed C function references to avoid naming conflicts
-    static let c_calculateFolderSizes: (@convention(c) (UnsafePointer<CChar>, Bool, Bool, Bool) -> FolderSizeResultPtr?)? = {
+    static let c_calculateFolderSizes: (@convention(c) (UnsafePointer<CChar>, Bool, Bool, Bool, CancellationTokenPtr?) -> FolderSizeResultPtr?)? = {
         getSymbol(FZCLibraryHandle, "calculateFolderSizes")
     }()
+    
+    // Cancellation token functions
+    static let c_createCancellationToken: (@convention(c) () -> CancellationTokenPtr?)? = {
+        getSymbol(FZCLibraryHandle, "createCancellationToken")
+    }()
+    static let c_cancelToken: (@convention(c) (CancellationTokenPtr?) -> Void)? = {
+        getSymbol(FZCLibraryHandle, "cancelToken")
+    }()
+    static let c_isTokenCancelled: (@convention(c) (CancellationTokenPtr?) -> Bool)? = {
+        getSymbol(FZCLibraryHandle, "isTokenCancelled")
+    }()
+    static let c_releaseCancellationToken: (@convention(c) (CancellationTokenPtr?) -> Void)? = {
+        getSymbol(FZCLibraryHandle, "releaseCancellationToken")
+    }()
+    
     static let c_getResultRootNode: (@convention(c) (FolderSizeResultPtr?) -> FileNodePtr?)? = {
         getSymbol(FZCLibraryHandle, "getResultRootNode")
     }()
@@ -141,6 +157,49 @@ class FileSizeCalculator {
             self.elapsedTimeMs = elapsedTimeMs
         }
     }
+
+    public class CancellationToken {
+        private let tokenPtr: CancellationTokenPtr?
+        private let lock = NSLock()
+        private var isReleased = false
+        
+        public init() {
+            self.tokenPtr = FZCLoader.c_createCancellationToken?()
+        }
+        
+        deinit {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            if !isReleased {
+                FZCLoader.c_releaseCancellationToken?(tokenPtr)
+                isReleased = true
+            }
+        }
+        
+        public func cancel() {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            guard !isReleased else { return }
+            FZCLoader.c_cancelToken?(tokenPtr)
+        }
+        
+        public var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            guard !isReleased else { return false }
+            return FZCLoader.c_isTokenCancelled?(tokenPtr) ?? false
+        }
+        
+        internal var rawPointer: CancellationTokenPtr? {
+            lock.lock()
+            defer { lock.unlock() }
+            
+            return isReleased ? nil : tokenPtr
+        }
+    }
     
     private let useParallelProcessing: Bool
     private let maxThreads: Int
@@ -156,7 +215,8 @@ class FileSizeCalculator {
         at path: String,
         rootOnly: Bool = false,
         useAllocatedSize: Bool = true,
-        includeDirectorySize: Bool = true
+        includeDirectorySize: Bool = true,
+        cancellationToken: CancellationToken? = nil
     ) -> Result? {
         guard FileManager.default.fileExists(atPath: path) else {
             logger.log("File does not exist at \(path)")
@@ -177,12 +237,12 @@ class FileSizeCalculator {
             return nil
         }
         
-        // Choose the appropriate C function based on configuration
-        let resultPtr = standardFunc(cPath, rootOnly, useAllocatedSize, includeDirectorySize)
+        // Pass the cancellation token to the C function
+        let resultPtr = standardFunc(cPath, rootOnly, useAllocatedSize, includeDirectorySize, cancellationToken?.rawPointer)
 
         // Process the result pointer
         guard let ptr = resultPtr else {
-            logger.log("Failed to obtain result ptr")
+            logger.log("Failed to obtain result ptr (possibly cancelled)")
             return nil
         }
         
