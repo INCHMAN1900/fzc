@@ -157,16 +157,25 @@ bool is_hard_link(const std::string& path1, const std::string& path2) {
 // Get all mount points on the system
 std::unordered_set<std::string> FZC::getMountPoints() {
     std::unordered_set<std::string> mountPoints;
-    struct statfs* mntbuf;
+    struct statfs* mntbuf = nullptr;
     int mounts = getmntinfo(&mntbuf, MNT_WAIT);
-    if (mounts > 0) {
+    if (mounts > 0 && mntbuf != nullptr) {
         for (int i = 0; i < mounts; i++) {
             const auto& fs = mntbuf[i];
+
+            if (fs.f_mntonname == nullptr) continue;
+
             std::string mountPath = fs.f_mntonname;
+
             if (strcmp(fs.f_mntonname, "/") != 0) {
+                bool fstype_not_apfs = true;
+                if (fs.f_fstypename != nullptr) {
+                    fstype_not_apfs = (strncmp(fs.f_fstypename, "apfs", 4) != 0);
+                }
+
                 if ((fs.f_flags & MNT_LOCAL) == 0 ||
                     (fs.f_flags & MNT_REMOVABLE) ||
-                    strncmp(fs.f_fstypename, "apfs", 4)) {
+                    fstype_not_apfs) {
                     mountPoints.insert(mountPath);
                 }
             }
